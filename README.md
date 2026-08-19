@@ -1,44 +1,65 @@
-# reBot B601-DM PICO 4 VR Teleoperator
+# PICO 4 VR 遥操作插件 — Seeed reBot B601-DM × LeRobot
 
-面向 LeRobot 0.6.x 和 Seeed Studio reBot B601-DM 的 PICO 4 笛卡尔遥操作插件。
+[![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/)
+[![LeRobot](https://img.shields.io/badge/LeRobot-0.6.x-FFD21E?logo=huggingface&logoColor=white)](https://github.com/huggingface/lerobot)
+[![License](https://img.shields.io/badge/License-Apache--2.0-3377FF)](LICENSE)
 
-```text
-PICO 手柄位姿
-  → XR→B601 坐标转换
-  → Grip 按下时建立腕部中心位置 + 夹爪姿态参考
-  → q1-q3 异步位置 IK（腕部中心）+ q4-q6 闭式姿态解
-  → 同一 VR 帧原子更新六轴目标
-  → 限位、跳支保护、速度/加速度整形
-  → LeRobot RebotB601Follower
-```
+面向 [LeRobot](https://github.com/huggingface/lerobot) 0.6.x 与 Seeed Studio reBot B601-DM（达妙电机）的 PICO 4 手柄**笛卡尔遥操作**插件。独立 pip 包，不修改 LeRobot 任何源码。
 
-| 控制 | 行为 |
+- **6-DoF 笛卡尔映射** —— 手柄位移 → 腕部中心位置 IK（q1–q3），手柄旋转 → 闭式姿态解（q4–q6），同一 VR 帧原子更新六轴目标
+- **离合式死人手开关** —— Grip 按住激活、松开立即冻结；激活前必须先完全松开一次，防止手柄积累运动瞬间注入
+- **三线程 latest-only 架构** —— TCP 接收 / 异步 IK / 主控制循环互不阻塞，永远只消费最新样本与最新 IK 结果
+- **分层安全防护** —— 软限位、跳支保护、速度/加速度整形、follower 相对目标裁剪；反馈异常进入 HOLD 冻结，连续故障受控退出并保留扭矩
+- 🔌 **双 VR 后端** —— XRoboToolkit V1（TCP，零额外依赖）与 Isaac Teleop + CloudXR（可选 extra）
+- **LeRobot 插件** —— 符合 `lerobot_teleoperator_*` 自动发现约定，导入即注册 `--teleop.type=rebot_vr`
+
+
+
+## 要求
+
+| 类别 | 要求 |
 |---|---|
-| Grip | 按住激活遥操，松开保持当前姿态 |
-| Trigger | 夹爪开合（`0` 张开，`1` 闭合） |
-| A / X | 平滑返回起始姿态 |
-| B / Y | 平滑返回六轴零点 |
+| 机械臂 | Seeed Studio reBot B601-DM（q1–q3 达妙 DM-J4340P-2EC · q4–q6 达妙 DM-J4310-2EC） |
+| VR 设备 | PICO 4：XRoboToolkit（V1 后端）或 CloudXR 串流（Isaac 后端） |
+| 主机 | Linux；串口转 CAN 桥（默认 `/dev/ttyACM0`，damiao 协议，921600 baud） |
+| Python | 3.12+ |
+| LeRobot | `>=0.6.0,<0.7.0`（含 `rebot` extra，安装时自动引入） |
+
+## 安全须知
+
+> [!WARNING]
+> - 机械臂上电前确认周围无障碍物；遥操过程中人员靠近时随时准备松手（松开 Grip 即冻结）。
+> - **首次使用务必按[分阶段测试](#3-分阶段测试)从低倍率开始**，确认映射方向与速度符合预期后再提速。
+> - 默认退出即断电机扭矩（`--disable-torque-on-disconnect` 默认开启），**退出前请托住机械臂**；如需保持使能可加 `--no-disable-torque-on-disconnect`。
+> - [参数表](#参数)中的"最大值"列为实机验证的安全上限，CLI 不做强制校验，请勿随意超过。
 
 ## 安装
 
-要求 Python 3.12+、LeRobot `>=0.6.0,<0.7.0`。XRoboToolkit V1 无需额外依赖；Isaac/CloudXR 后端安装 `[isaac]` extra。
+本包需安装进 LeRobot 所在的虚拟环境（依赖其中的 `lerobot`）：
 
 ```bash
-uv pip install \
-  --python /home/verser/Python/lerobot/.venv/bin/python \
-  -e /home/verser/Python/lerobot-teleoperator-rebot-vr
-source /home/verser/Python/lerobot/.venv/bin/activate
+source /path/to/lerobot/.venv/bin/activate   # 激活 LeRobot 虚拟环境（按实际路径）
+pip install -e .                             # 仓库目录下可编辑安装；亦可用 uv pip install -e .
+```
+
+可选：Isaac Teleop / CloudXR 后端（默认 XRoboToolkit V1 后端**无需任何额外依赖**）：
+
+```bash
+pip install -e ".[isaac]"
 ```
 
 ## 快速开始
 
-### 1. 测试 VR 数据（不连机械臂）
+### 1. VR 数据自检（不连机械臂）
 
 ```bash
 rebot-vr-print --backend xrobotoolkit_v1 --host 0.0.0.0 --port 63901 --hand right --rate 10
 ```
 
-检查 `tracking=true`、`grip`/`trigger` 范围 0–1、位姿跟随手部运动。同一时间只能有一个程序监听 63901。
+在 PICO 4 上启动 XRoboToolkit（V1）的 Tracking 发送后，确认输出中 `tracking=true`、`grip`/`trigger` 范围 0–1、位姿随手柄运动。
+
+> [!NOTE]
+> 63901 端口同一时间只能有一个进程监听；自检完成后请先退出本命令再启动遥操。
 
 ### 2. 实机遥操
 
@@ -46,7 +67,7 @@ rebot-vr-print --backend xrobotoolkit_v1 --host 0.0.0.0 --port 63901 --hand righ
 rebot-vr-teleoperate --robot-port /dev/ttyACM0 --backend xrobotoolkit_v1
 ```
 
-启动后机械臂限速移动到起始姿态；**先完全松开 Grip 一次**，再按住 Grip 激活遥操。速度与加速度参数见[参数表](#参数)。首次使用建议按[分阶段测试](#3-分阶段测试)流程操作。
+启动后机械臂先**限速移动到起始姿态**，随后进入遥操待命；**先完全松开 Grip 一次**，再按住 Grip 激活遥操。速度与加速度调节见[参数](#参数)，首次使用请先按下一节的分阶段流程操作。
 
 ### 3. 分阶段测试
 
@@ -56,23 +77,33 @@ rebot-vr-teleoperate --robot-port /dev/ttyACM0 --backend xrobotoolkit_v1
 | 2 | 仅姿态 | `--position-scale 0 --orientation-scale 0.3 --max-joint-speed-rad-s 0.1` |
 | 3 | 完整映射 | `--position-scale 1.0 --orientation-scale 1.0 --max-joint-speed-rad-s 0.4` |
 
+## 手柄按键
+
+| 控制 | 行为 |
+|---|---|
+| Grip | 按住激活遥操，松开冻结并保持当前姿态（离合） |
+| Trigger | 夹爪开合（`0` 张开 → `1` 闭合），不依赖 Grip |
+| A / X | 平滑返回起始姿态（右手 / 左手） |
+| B / Y | 平滑返回六轴零点（右手 / 左手） |
+
 ## 参数
+
+`rebot-vr-teleoperate` 常用参数（完整参数：`rebot-vr-teleoperate --help`）：
 
 | 参数 | 默认 | 最大值 | 说明 |
 |---|---|---|---|
 | `--position-scale` | `1.0` | —（非负） | 手柄位移 → 腕部中心位移倍率 |
 | `--orientation-scale` | `1.0` | —（非负） | 手柄旋转 → 末端旋转倍率 |
-| `--max-joint-speed-rad-s` | `2.0` | **5.5** | q1-q3 速度上限（rad/s） |
-| `--max-joint-acceleration-rad-s2` | `8.0` | **20** | q1-q3 加速度上限（rad/s²） |
-| `--wrist-speed-rad-s` | 回退臂部 | **12** | q4-q6 速度上限（rad/s） |
-| `--wrist-acceleration-rad-s2` | 回退臂部 | **60** | q4-q6 加速度上限（rad/s²） |
-| `--max-relative-target-deg` | `5` | **20** | follower 相对目标保护（deg）；q4-q6 可用 `--wrist-relative-target-deg` 单独设置 |
+| `--max-joint-speed-rad-s` | `2.0` | **5.5** | q1–q3 速度上限（rad/s） |
+| `--max-joint-acceleration-rad-s2` | `8.0` | **20** | q1–q3 加速度上限（rad/s²） |
+| `--wrist-speed-rad-s` | —（同臂部） | **12** | q4–q6 速度上限（rad/s） |
+| `--wrist-acceleration-rad-s2` | —（同臂部） | **60** | q4–q6 加速度上限（rad/s²） |
+| `--max-relative-target-deg` | `5` | **20** | follower 相对目标保护（deg）；q4–q6 可用 `--wrist-relative-target-deg` 单独设置 |
 | `--gripper-torque-ratio` | `0.2` | `1.0` | 夹爪最大夹持力比例 |
 | `--fps` | `60` | —（建议 ≤120） | 主循环频率 |
 
-> 以上最大值为实机验证的安全上限。电机硬件空载上限更高（q1-q3 = 5.5、q4-q6 = 20.9 rad/s），见[下一节](#最大速度与加速度)。CLI 不强制最大值，超过时电机物理上跑不动。
-
-完整参数：`rebot-vr-teleoperate --help`。
+> [!IMPORTANT]
+> 上表最大值为**实机验证的安全上限**；电机硬件空载上限见[最大速度与加速度](#最大速度与加速度)。CLI 不强制最大值，超过后电机物理上跑不动。
 
 ### 最大速度与加速度
 
@@ -80,8 +111,8 @@ B601-DM 电机硬件上限：
 
 | 关节 | 电机 | 空载最大 | 额定 |
 |---|---|---|---|
-| q1-q3 | 达妙 DM-J4340P-2EC（40:1） | **5.5 rad/s**（315°/s） | 3.8 rad/s |
-| q4-q6 | 达妙 DM-J4310-2EC（10:1） | **20.9 rad/s**（1200°/s） | 12.6 rad/s |
+| q1–q3 | 达妙 DM-J4340P-2EC（40:1） | **5.5 rad/s**（315°/s） | 3.8 rad/s |
+| q4–q6 | 达妙 DM-J4310-2EC（10:1） | **20.9 rad/s**（1200°/s） | 12.6 rad/s |
 
 生产/采集推荐上限（保留余量）：
 
@@ -92,24 +123,69 @@ rebot-vr-teleoperate \
   --max-relative-target-deg 20
 ```
 
-注意：`--max-relative-target-deg` 应 ≥ 最大速度 °/s ÷ fps，否则会掐死实际速度；加速度建议从低值分档上调（10 → 20 → 40 → 60），每档观察 `wrist_clip_deg` 与跳变冲击。
+> [!TIP]
+> `--max-relative-target-deg` 应 ≥ 最大速度 °/s ÷ fps，否则会掐死实际速度；加速度建议从低值分档上调（10 → 20 → 40 → 60），每档观察状态行中的 `wrist_clip_deg` 与跳变冲击。
+
+## 工作原理
+
+```text
+PICO 手柄位姿（XRoboToolkit V1 TCP / Isaac CloudXR）
+  → XR → B601 坐标转换
+  → Grip 按下时建立腕部中心位置 + 夹爪姿态参考（离合相对映射）
+  → q1–q3 异步位置 IK（腕部中心）+ q4–q6 绝对闭式姿态解
+  → 同一 VR 帧原子更新六轴目标
+  → 限位、跳支保护、速度/加速度整形
+  → LeRobot RebotB601Follower.send_action()
+```
+
+**线程模型**：V1 TCP 接收线程原子替换最新样本；IK worker 以 latest-only 方式求解（新请求到达时旧请求被丢弃）；主控制线程独占机器人反馈、状态机与唯一的 `send_action()` 调用。
+
+**安全状态机**：
+
+| 状态 | 含义 |
+|---|---|
+| `WAITING` | 尚未收到有效 Tracking |
+| `IDLE` | Tracking 新鲜但 Grip 未激活；Trigger 仍可控制夹爪 |
+| `ACTIVE` | 遥操激活 |
+| `STALE` | 样本超时或断连：保持当前位置，要求重新释放 Grip |
+| `HOLD` | 反馈缺失/非有限/超限：冻结最后有效命令；连续 5 帧后受控退出并保留扭矩 |
+
+设计细节见 [CONTROL_DESIGN.md](docs/CONTROL_DESIGN.md) 与 [INVERSE_KINEMATICS_DESIGN.md](docs/INVERSE_KINEMATICS_DESIGN.md)。
+
+## LeRobot 插件集成
+
+包名符合 `lerobot_teleoperator_*` 约定，导入即把 `rebot_vr` 注册进 LeRobot 的遥操器 registry。但 LeRobot 0.6 的通用 `teleoperate/record` 循环**不会向 teleoperator 发送机器人反馈**，而本插件的笛卡尔控制闭环依赖反馈保证安全，因此该路径会**直接报错失败**（fail-closed），不会退化为开环关节控制。实机请一律使用 `rebot-vr-teleoperate`。
 
 ## 测试
 
 ```bash
-cd /home/verser/Python/lerobot-teleoperator-rebot-vr
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYTHONPATH=src \
-  /home/verser/Python/lerobot/.venv/bin/python -m pytest -q
+# LeRobot 虚拟环境中、仓库根目录下
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest -q
 ```
+
+共 57 个单元测试，覆盖 V1 流解码与样本校验、离合相对位姿映射、闭式腕部解、命令整形、安全状态机与 LeRobot 插件注册。
 
 ## 故障排除
 
 | 现象 | 处理 |
 |---|---|
-| `command not found` | 激活 LeRobot `.venv`，或使用 `python -m lerobot_teleoperator_rebot_vr.teleoperate_real` |
-| `Address already in use` | 关闭占用 63901 的其他进程 |
-| 按住 Grip 仍为 `idle` | 完全松开 Grip 一次再重新按住 |
-| `state=hold` | 反馈异常，检查 CAN/标定；连续 5 帧后保留扭矩受控退出 |
-| 退出后机械臂下坠 | 退出前托住机械臂；默认断开时关闭扭矩 |
+| `command not found` | 激活 LeRobot 虚拟环境；或改用 `python -m lerobot_teleoperator_rebot_vr.teleoperate_real` |
+| `Address already in use` | 关闭占用 63901 的其他进程（如仍在运行的 `rebot-vr-print`） |
+| 按住 Grip 仍为 `idle` | 先完全松开 Grip 一次再重新按住 |
+| `state=stale` | VR 数据流中断：检查 PICO 端发送与网络 |
+| `state=hold` / 反馈异常 | 检查 CAN 连接与标定；连续 5 帧后保留扭矩受控退出 |
+| 退出后机械臂下坠 | 退出前托住机械臂；默认断开时关闭扭矩，可用 `--no-disable-torque-on-disconnect` 保持使能 |
+| `lerobot-teleoperate --teleop.type=rebot_vr` 报 feedback 错误 | 预期行为：LeRobot 通用循环不提供反馈，请改用 `rebot-vr-teleoperate` |
+| 实际速度达不到设定值 | 提高 `--max-relative-target-deg`（应 ≥ 最大速度 °/s ÷ fps） |
 
-设计文档：[CONTROL_DESIGN.md](docs/CONTROL_DESIGN.md) · [INVERSE_KINEMATICS_DESIGN.md](docs/INVERSE_KINEMATICS_DESIGN.md)
+
+
+## 文档
+
+- [控制设计](docs/CONTROL_DESIGN.md) —— 线程模型、坐标映射、安全状态与反馈故障处理
+- [逆解设计](docs/INVERSE_KINEMATICS_DESIGN.md) —— 从 VR 样本到六轴命令的完整推导
+- [腕部求解验证报告](docs/vr_wrist_test/TEST_REPORT.md) —— 闭环仿真跳变统计与 q4–q6 解算对比
+
+## 许可证
+
+[Apache-2.0](LICENSE)
