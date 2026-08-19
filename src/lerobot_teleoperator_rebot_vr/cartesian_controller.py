@@ -68,6 +68,7 @@ class CartesianControlConfig:
     wrist_speed_rad_s: float | None = None
     wrist_acceleration_rad_s2: float | None = None
     wrist_command_feedback_error_deg: float | None = None
+    gripper_command_feedback_error_deg: float | None = None
     feedback_fault_max_consecutive: int = 5
     initial_q_rad: tuple[float, float, float, float, float, float] = (
         0.0,
@@ -120,13 +121,14 @@ class CartesianControlConfig:
                     self.wrist_speed_rad_s,
                     self.wrist_acceleration_rad_s2,
                     self.wrist_command_feedback_error_deg,
+                    self.gripper_command_feedback_error_deg,
                 )
                 if value is not None
             ),
             dtype=np.float64,
         )
         if not np.all(np.isfinite(wrist_positive)) or np.any(wrist_positive <= 0.0):
-            raise ValueError("wrist control limits must be finite and positive")
+            raise ValueError("wrist and gripper control limits must be finite and positive")
         if self.ik_max_iterations <= 0:
             raise ValueError("ik_max_iterations must be positive")
         if self.feedback_fault_max_consecutive <= 0:
@@ -505,12 +507,17 @@ class SplitArmWristController:
         self._gripper_command_deg = float(gripper_position[0])
         self._gripper_velocity_deg_s = float(gripper_velocity[0])
         if self.config.max_command_feedback_error_deg is not None:
+            gripper_feedback_error = (
+                self.config.max_command_feedback_error_deg
+                if self.config.gripper_command_feedback_error_deg is None
+                else self.config.gripper_command_feedback_error_deg
+            )
             unclipped_gripper_deg = self._gripper_command_deg
             self._gripper_command_deg = float(
                 bound_position_command_to_feedback(
                     np.array([self._gripper_command_deg]),
                     np.array([gripper_actual_deg]),
-                    self.config.max_command_feedback_error_deg,
+                    gripper_feedback_error,
                     lower_limit=np.array(
                         [min(self.config.gripper_open_deg, self.config.gripper_closed_deg)]
                     ),

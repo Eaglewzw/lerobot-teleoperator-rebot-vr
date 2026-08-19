@@ -86,13 +86,17 @@ rebot-vr-teleoperate --robot-port /dev/ttyACM0 --backend xrobotoolkit_v1
 |---|---|---|---|
 | `--position-scale` | `1.0` | — | 手柄位移 → 腕部中心位移倍率 |
 | `--orientation-scale` | `1.0` | — | 手柄旋转 → 末端旋转倍率 |
-| `--max-joint-speed-rad-s` | `2.0` | **5.5** | q1–q3 速度上限（rad/s） |
-| `--max-joint-acceleration-rad-s2` | `8.0` | **20** | q1–q3 加速度上限（rad/s²） |
-| `--wrist-speed-rad-s` | —（同臂部） | **12** | q4–q6 速度上限（rad/s） |
-| `--wrist-acceleration-rad-s2` | —（同臂部） | **60** | q4–q6 加速度上限（rad/s²） |
-| `--max-relative-target-deg` | `5` | **20** | follower 相对目标保护（deg）；q4–q6 可用 `--wrist-relative-target-deg` 单独设置 |
+| `--max-joint-speed-rad-s` | `5.5` | **5.5** | q1–q3 速度上限（rad/s） |
+| `--max-joint-acceleration-rad-s2` | `20` | **20** | q1–q3 加速度上限（rad/s²） |
+| `--wrist-speed-rad-s` | `12` | **12** | q4–q6 速度上限（rad/s） |
+| `--wrist-acceleration-rad-s2` | `60` | **60** | q4–q6 加速度上限（rad/s²） |
+| `--max-relative-target-deg` | `20` | **20** | 臂部 follower 相对目标保护（deg） |
+| `--wrist-relative-target-deg` | `20` | **20** | q4–q6 follower 相对目标保护（deg） |
+| `--gripper-relative-target-deg` | `20` | **20** | 夹爪 follower 相对目标保护（deg） |
+| `--gripper-max-speed-deg-s` | `1200` | **1200** | 夹爪速度上限（°/s） |
+| `--gripper-max-acceleration-deg-s2` | `5000` | 推荐 ≤50000 | 夹爪加速度上限（°/s²） |
 | `--gripper-torque-ratio` | `0.2` | `1.0` | 夹爪最大夹持力比例 |
-| `--fps` | `60` | —（建议 ≤120） | 主循环频率 |
+| `--fps` | `60` |  ≤120 | 主循环频率 |
 
 > [!IMPORTANT]
 > 上表最大值为**实机验证的安全上限**；电机硬件空载上限见[最大速度与加速度](#最大速度与加速度)。CLI 不强制最大值，超过后电机物理上跑不动。
@@ -105,6 +109,7 @@ B601-DM 电机硬件上限：
 |---|---|---|---|
 | q1–q3 | 达妙 DM-J4340P-2EC（40:1） | **5.5 rad/s**（315°/s） | 3.8 rad/s |
 | q4–q6 | 达妙 DM-J4310-2EC（10:1） | **20.9 rad/s**（1200°/s） | 12.6 rad/s |
+| 夹爪 | 达妙 DM-J4310-2EC（10:1） | **20.9 rad/s**（1200°/s） | 12.6 rad/s |
 
 生产/采集推荐上限（保留余量）：
 
@@ -114,6 +119,17 @@ rebot-vr-teleoperate \
   --wrist-speed-rad-s 12 --wrist-acceleration-rad-s2 60 \
   --max-relative-target-deg 20
 ```
+
+夹爪跑满电机空载上限（1200°/s），且不放宽臂部保护：
+
+```bash
+rebot-vr-teleoperate \
+  --gripper-max-speed-deg-s 1200 \
+  --gripper-max-acceleration-deg-s2 20000 \
+  --gripper-relative-target-deg 20
+```
+
+夹爪速度受两层串联钳制：`--gripper-max-speed-deg-s`（控制器整形与电机 FORCE_POS 速度限）和 `--gripper-relative-target-deg` × fps（follower 每周期相对裁剪）。相对目标小于 最大速度 ÷ fps（60 fps 下 1200°/s 需 ≥ 20）时，速度会被钳在 相对目标 × fps。`--gripper-relative-target-deg` 未设置时跟随 `--max-relative-target-deg`，也可单独设置；放宽夹爪不影响臂部保护。20000°/s² 加速到 1200°/s 需要 v²/2a = 36°，夹爪行程 270° 足够跑满。
 
 > [!TIP]
 > `--max-relative-target-deg` 应 ≥ 最大速度 °/s ÷ fps，否则会掐死实际速度；加速度建议从低值分档上调（10 → 20 → 40 → 60），每档观察状态行中的 `wrist_clip_deg` 与跳变冲击。
@@ -160,7 +176,7 @@ PICO 手柄位姿（XRoboToolkit V1 TCP / Isaac CloudXR）
 | `state=hold` / 反馈异常 | 检查 CAN 连接与标定；连续 5 帧后保留扭矩受控退出 |
 | 退出后机械臂下坠 | 退出前托住机械臂；默认断开时关闭扭矩，可用 `--no-disable-torque-on-disconnect` 保持使能 |
 | `lerobot-teleoperate --teleop.type=rebot_vr` 报 feedback 错误 | 预期行为：LeRobot 通用循环不提供反馈，请改用 `rebot-vr-teleoperate` |
-| 实际速度达不到设定值 | 提高 `--max-relative-target-deg`（应 ≥ 最大速度 °/s ÷ fps） |
+| 实际速度达不到设定值 | 相对目标被钳：臂部调大 `--max-relative-target-deg`、夹爪调大 `--gripper-relative-target-deg`（均应 ≥ 最大速度 °/s ÷ fps） |
 
 
 

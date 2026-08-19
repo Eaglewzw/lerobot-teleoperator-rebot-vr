@@ -477,27 +477,26 @@ def test_feedback_hold_send_bypasses_relative_clamp_only_for_the_send() -> None:
     assert robot.config.max_relative_target == pytest.approx(5.0)
 
 
-def test_wrist_cli_options_default_to_none_and_validate_positive_values() -> None:
+def test_wrist_and_gripper_cli_options_defaults_and_positive_validation() -> None:
     parser = _parser()
     help_text = parser.format_help()
-    compact_help = "".join(help_text.split())
     assert "--wrist-speed-rad-s" in help_text
-    assert "defaultsto--max-joint-speed-rad-s" in compact_help
     assert "--wrist-acceleration-rad-s2" in help_text
-    assert "defaultsto--max-joint-acceleration-rad-s2" in compact_help
     assert "--wrist-relative-target-deg" in help_text
-    assert "defaultsto--max-relative-target-deg" in compact_help
+    assert "--gripper-relative-target-deg" in help_text
 
     defaults = parser.parse_args([])
-    assert defaults.wrist_speed_rad_s is None
-    assert defaults.wrist_acceleration_rad_s2 is None
-    assert defaults.wrist_relative_target_deg is None
+    assert defaults.wrist_speed_rad_s == pytest.approx(12.0)
+    assert defaults.wrist_acceleration_rad_s2 == pytest.approx(60.0)
+    assert defaults.wrist_relative_target_deg == pytest.approx(20.0)
+    assert defaults.gripper_relative_target_deg is None
     _validate_args(defaults)
 
     for option in (
         "--wrist-speed-rad-s",
         "--wrist-acceleration-rad-s2",
         "--wrist-relative-target-deg",
+        "--gripper-relative-target-deg",
     ):
         invalid = parser.parse_args([option, "0"])
         with pytest.raises(ValueError, match="must be positive"):
@@ -519,11 +518,31 @@ def test_follower_wrist_limits_use_scalar_fallback_or_complete_motor_dict() -> N
         "wrist_roll": 20.0,
         "gripper": 6.0,
     }
+    assert _follower_relative_target(6.0, 6.0, 6.0) == pytest.approx(6.0)
+    assert _follower_relative_target(6.0, 20.0, 25.0) == {
+        "shoulder_pan": 6.0,
+        "shoulder_lift": 6.0,
+        "elbow_flex": 6.0,
+        "wrist_flex": 20.0,
+        "wrist_yaw": 20.0,
+        "wrist_roll": 20.0,
+        "gripper": 25.0,
+    }
+    assert _follower_relative_target(6.0, 6.0, 25.0) == {
+        "shoulder_pan": 6.0,
+        "shoulder_lift": 6.0,
+        "elbow_flex": 6.0,
+        "wrist_flex": 6.0,
+        "wrist_yaw": 6.0,
+        "wrist_roll": 6.0,
+        "gripper": 25.0,
+    }
 
 
 def test_controller_passes_split_arm_wrist_motion_limits(monkeypatch) -> None:
     shape_calls: list[tuple[np.ndarray, np.ndarray]] = []
     bound_calls: list[np.ndarray] = []
+    gripper_bound_calls: list[float] = []
     original_shape = cartesian_controller_module.shape_joint_position_command
     original_bound = cartesian_controller_module.bound_position_command_to_feedback
 
@@ -540,6 +559,8 @@ def test_controller_passes_split_arm_wrist_motion_limits(monkeypatch) -> None:
     def recording_bound(command_position, feedback_position, max_error, **kwargs):
         if np.asarray(command_position).shape == (6,):
             bound_calls.append(np.asarray(max_error, dtype=float).copy())
+        elif np.asarray(command_position).shape == (1,):
+            gripper_bound_calls.append(float(max_error))
         return original_bound(command_position, feedback_position, max_error, **kwargs)
 
     monkeypatch.setattr(
@@ -559,6 +580,7 @@ def test_controller_passes_split_arm_wrist_motion_limits(monkeypatch) -> None:
             wrist_acceleration_rad_s2=60.0,
             max_command_feedback_error_deg=5.4,
             wrist_command_feedback_error_deg=18.0,
+            gripper_command_feedback_error_deg=22.5,
         ),
         ik_worker=ImmediateIKWorker(),
     )
@@ -570,6 +592,7 @@ def test_controller_passes_split_arm_wrist_motion_limits(monkeypatch) -> None:
     assert bound_calls[-1] == pytest.approx(
         np.deg2rad([5.4, 5.4, 5.4, 18.0, 18.0, 18.0])
     )
+    assert gripper_bound_calls[-1] == pytest.approx(22.5)
 
 
 def test_controller_wrist_limit_none_falls_back_without_behavior_change() -> None:
