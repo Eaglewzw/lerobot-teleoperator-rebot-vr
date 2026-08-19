@@ -4,10 +4,9 @@
 [![LeRobot](https://img.shields.io/badge/LeRobot-0.6.x-FFD21E?logo=huggingface&logoColor=white)](https://github.com/huggingface/lerobot)
 [![License](https://img.shields.io/badge/License-Apache--2.0-3377FF)](LICENSE)
 
-面向 [LeRobot](https://github.com/huggingface/lerobot) 0.6.x 与 Seeed Studio reBot B601-DM（达妙电机）的 PICO 4 手柄**笛卡尔遥操作**插件。独立 pip 包，不修改 LeRobot 任何源码。
-
+面向 [LeRobot](https://github.com/huggingface/lerobot) 0.6.x 与 Seeed Studio reBot B601-DM（达妙电机）的 PICO 4 手柄**笛卡尔遥操作**插件。
 - **6-DoF 笛卡尔映射** —— 手柄位移 → 腕部中心位置 IK（q1–q3），手柄旋转 → 闭式姿态解（q4–q6），同一 VR 帧原子更新六轴目标
-- **离合式死人手开关** —— Grip 按住激活、松开立即冻结；激活前必须先完全松开一次，防止手柄积累运动瞬间注入
+- **离合式开关** —— Grip 按住激活、松开立即冻结；激活前必须先完全松开一次，防止手柄积累运动瞬间注入
 - **三线程 latest-only 架构** —— TCP 接收 / 异步 IK / 主控制循环互不阻塞，永远只消费最新样本与最新 IK 结果
 - **分层安全防护** —— 软限位、跳支保护、速度/加速度整形、follower 相对目标裁剪；反馈异常进入 HOLD 冻结，连续故障受控退出并保留扭矩
 - **双 VR 后端** —— XRoboToolkit V1（TCP，零额外依赖）与 Isaac Teleop + CloudXR（可选 extra）
@@ -31,7 +30,7 @@
 > - 机械臂上电前确认周围无障碍物；遥操过程中人员靠近时随时准备松手（松开 Grip 即冻结）。
 > - **首次使用务必按[分阶段测试](#3-分阶段测试)从低倍率开始**，确认映射方向与速度符合预期后再提速。
 > - 默认退出即断电机扭矩（`--disable-torque-on-disconnect` 默认开启），**退出前请托住机械臂**；如需保持使能可加 `--no-disable-torque-on-disconnect`。
-> - [参数表](#参数)中的"最大值"列为实机验证的安全上限，CLI 不做强制校验，请勿随意超过。
+> - [参数表](#参数)中的"最大值"列为实机验证的安全上限，CLI 不做强制校验，请勿超过。
 
 ## 安装
 
@@ -99,7 +98,7 @@ rebot-vr-teleoperate --robot-port /dev/ttyACM0 --backend xrobotoolkit_v1
 | `--fps` | `60` |  ≤120 | 主循环频率 |
 
 > [!IMPORTANT]
-> 上表最大值为**实机验证的安全上限**；电机硬件空载上限见[最大速度与加速度](#最大速度与加速度)。CLI 不强制最大值，超过后电机物理上跑不动。
+> 上表最大值为**实机验证的安全上限**；电机硬件空载上限见[最大速度与加速度](#最大速度与加速度)。CLI 不强制校验最大值，超出后电机物理上无法达到。
 
 ### 最大速度与加速度
 
@@ -120,7 +119,7 @@ rebot-vr-teleoperate \
   --max-relative-target-deg 20
 ```
 
-夹爪跑满电机空载上限（1200°/s），且不放宽臂部保护：
+夹爪达到电机空载上限（1200°/s），且不放宽臂部保护：
 
 ```bash
 rebot-vr-teleoperate \
@@ -129,10 +128,10 @@ rebot-vr-teleoperate \
   --gripper-relative-target-deg 20
 ```
 
-夹爪速度受两层串联钳制：`--gripper-max-speed-deg-s`（控制器整形与电机 FORCE_POS 速度限）和 `--gripper-relative-target-deg` × fps（follower 每周期相对裁剪）。相对目标小于 最大速度 ÷ fps（60 fps 下 1200°/s 需 ≥ 20）时，速度会被钳在 相对目标 × fps。`--gripper-relative-target-deg` 未设置时跟随 `--max-relative-target-deg`，也可单独设置；放宽夹爪不影响臂部保护。20000°/s² 加速到 1200°/s 需要 v²/2a = 36°，夹爪行程 270° 足够跑满。
+夹爪速度受两层串联钳制：`--gripper-max-speed-deg-s`（控制器整形与电机 FORCE_POS 速度限）和 `--gripper-relative-target-deg` × fps（follower 每周期相对裁剪）。相对目标小于 最大速度 ÷ fps（60 fps 下 1200°/s 需 ≥ 20）时，实际速度将被限制为 相对目标 × fps。`--gripper-relative-target-deg` 未设置时跟随 `--max-relative-target-deg`，也可单独设置；放宽夹爪不影响臂部保护。20000°/s² 加速到 1200°/s 需要 v²/2a = 36°，夹爪行程 270° 足以加速至满速。
 
 > [!TIP]
-> `--max-relative-target-deg` 应 ≥ 最大速度 °/s ÷ fps，否则会掐死实际速度；加速度建议从低值分档上调（10 → 20 → 40 → 60），每档观察状态行中的 `wrist_clip_deg` 与跳变冲击。
+> `--max-relative-target-deg` 应 ≥ 最大速度 °/s ÷ fps，否则会限制实际速度；加速度建议从低值分档上调（10 → 20 → 40 → 60），每档观察状态行中的 `wrist_clip_deg` 与跳变冲击。
 
 ## 工作原理
 
@@ -176,7 +175,7 @@ PICO 手柄位姿（XRoboToolkit V1 TCP / Isaac CloudXR）
 | `state=hold` / 反馈异常 | 检查 CAN 连接与标定；连续 5 帧后保留扭矩受控退出 |
 | 退出后机械臂下坠 | 退出前托住机械臂；默认断开时关闭扭矩，可用 `--no-disable-torque-on-disconnect` 保持使能 |
 | `lerobot-teleoperate --teleop.type=rebot_vr` 报 feedback 错误 | 预期行为：LeRobot 通用循环不提供反馈，请改用 `rebot-vr-teleoperate` |
-| 实际速度达不到设定值 | 相对目标被钳：臂部调大 `--max-relative-target-deg`、夹爪调大 `--gripper-relative-target-deg`（均应 ≥ 最大速度 °/s ÷ fps） |
+| 实际速度达不到设定值 | 受相对目标限制：臂部增大 `--max-relative-target-deg`、夹爪增大 `--gripper-relative-target-deg`（均应 ≥ 最大速度 °/s ÷ fps） |
 
 
 
