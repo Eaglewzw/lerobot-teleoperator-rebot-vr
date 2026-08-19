@@ -62,15 +62,15 @@ rebot-vr-teleoperate --robot-port /dev/ttyACM0 --backend xrobotoolkit_v1
 |---|---|---|---|
 | `--position-scale` | `1.0` | —（非负） | 手柄位移 → 腕部中心位移倍率 |
 | `--orientation-scale` | `1.0` | —（非负） | 手柄旋转 → 末端旋转倍率 |
-| `--max-joint-speed-rad-s` | `2.0` | **5.5** | q1-q3 速度上限（rad/s），= 4340P 空载 |
-| `--max-joint-acceleration-rad-s2` | `8.0` | **330**（5.5×60） | q1-q3 加速度上限（rad/s²），推荐 20 |
-| `--wrist-speed-rad-s` | 回退臂部 | **20.9** | q4-q6 速度上限（rad/s），= 4310 空载，推荐 12 |
-| `--wrist-acceleration-rad-s2` | 回退臂部 | **1254**（20.9×60） | q4-q6 加速度上限（rad/s²），推荐 60 |
-| `--max-relative-target-deg` | `5` | **20**（1200°/s÷60） | follower 相对目标保护（deg）；q4-q6 可用 `--wrist-relative-target-deg` 单独设置 |
+| `--max-joint-speed-rad-s` | `2.0` | **5.5** | q1-q3 速度上限（rad/s） |
+| `--max-joint-acceleration-rad-s2` | `8.0` | **20** | q1-q3 加速度上限（rad/s²） |
+| `--wrist-speed-rad-s` | 回退臂部 | **12** | q4-q6 速度上限（rad/s） |
+| `--wrist-acceleration-rad-s2` | 回退臂部 | **60** | q4-q6 加速度上限（rad/s²） |
+| `--max-relative-target-deg` | `5` | **20** | follower 相对目标保护（deg）；q4-q6 可用 `--wrist-relative-target-deg` 单独设置 |
 | `--gripper-torque-ratio` | `0.2` | `1.0` | 夹爪最大夹持力比例 |
 | `--fps` | `60` | —（建议 ≤120） | 主循环频率 |
 
-> 加速度上限 = 速度上限 × fps：加速度再大也只能在一帧内加到满速，超过该值不产生额外效果。相对目标上限 = 最大速度 °/s ÷ fps，低于该值会掐死实际速度。CLI 不强制最大值，超过硬件上限时电机物理上跑不动。详见[下一节](#最大速度与加速度)。
+> 以上最大值为实机验证的安全上限。电机硬件空载上限更高（q1-q3 = 5.5、q4-q6 = 20.9 rad/s），见[下一节](#最大速度与加速度)。CLI 不强制最大值，超过时电机物理上跑不动。
 
 完整参数：`rebot-vr-teleoperate --help`。
 
