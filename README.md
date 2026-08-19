@@ -1,4 +1,4 @@
-# PICO 4 VR 遥操作插件 — Seeed reBot B601-DM × LeRobot
+# PICO 4 VR 遥操作插件
 
 [![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![LeRobot](https://img.shields.io/badge/LeRobot-0.6.x-FFD21E?logo=huggingface&logoColor=white)](https://github.com/huggingface/lerobot)
@@ -10,7 +10,7 @@
 - **离合式死人手开关** —— Grip 按住激活、松开立即冻结；激活前必须先完全松开一次，防止手柄积累运动瞬间注入
 - **三线程 latest-only 架构** —— TCP 接收 / 异步 IK / 主控制循环互不阻塞，永远只消费最新样本与最新 IK 结果
 - **分层安全防护** —— 软限位、跳支保护、速度/加速度整形、follower 相对目标裁剪；反馈异常进入 HOLD 冻结，连续故障受控退出并保留扭矩
-- 🔌 **双 VR 后端** —— XRoboToolkit V1（TCP，零额外依赖）与 Isaac Teleop + CloudXR（可选 extra）
+- **双 VR 后端** —— XRoboToolkit V1（TCP，零额外依赖）与 Isaac Teleop + CloudXR（可选 extra）
 - **LeRobot 插件** —— 符合 `lerobot_teleoperator_*` 自动发现约定，导入即注册 `--teleop.type=rebot_vr`
 
 
@@ -19,8 +19,8 @@
 
 | 类别 | 要求 |
 |---|---|
-| 机械臂 | Seeed Studio reBot B601-DM（q1–q3 达妙 DM-J4340P-2EC · q4–q6 达妙 DM-J4310-2EC） |
-| VR 设备 | PICO 4：XRoboToolkit（V1 后端）或 CloudXR 串流（Isaac 后端） |
+| 机械臂 | Seeed Studio reBot B601-DM |
+| VR 设备 | PICO 4：XRoboToolkit（V1 后端） |
 | 主机 | Linux；串口转 CAN 桥（默认 `/dev/ttyACM0`，damiao 协议，921600 baud） |
 | Python | 3.12+ |
 | LeRobot | `>=0.6.0,<0.7.0`（含 `rebot` extra，安装时自动引入） |
@@ -42,12 +42,6 @@ source /path/to/lerobot/.venv/bin/activate   # 激活 LeRobot 虚拟环境（按
 pip install -e .                             # 仓库目录下可编辑安装；亦可用 uv pip install -e .
 ```
 
-可选：Isaac Teleop / CloudXR 后端（默认 XRoboToolkit V1 后端**无需任何额外依赖**）：
-
-```bash
-pip install -e ".[isaac]"
-```
-
 ## 快速开始
 
 ### 1. VR 数据自检（不连机械臂）
@@ -55,8 +49,6 @@ pip install -e ".[isaac]"
 ```bash
 rebot-vr-print --backend xrobotoolkit_v1 --host 0.0.0.0 --port 63901 --hand right --rate 10
 ```
-
-在 PICO 4 上启动 XRoboToolkit（V1）的 Tracking 发送后，确认输出中 `tracking=true`、`grip`/`trigger` 范围 0–1、位姿随手柄运动。
 
 > [!NOTE]
 > 63901 端口同一时间只能有一个进程监听；自检完成后请先退出本命令再启动遥操。
@@ -92,8 +84,8 @@ rebot-vr-teleoperate --robot-port /dev/ttyACM0 --backend xrobotoolkit_v1
 
 | 参数 | 默认 | 最大值 | 说明 |
 |---|---|---|---|
-| `--position-scale` | `1.0` | —（非负） | 手柄位移 → 腕部中心位移倍率 |
-| `--orientation-scale` | `1.0` | —（非负） | 手柄旋转 → 末端旋转倍率 |
+| `--position-scale` | `1.0` | — | 手柄位移 → 腕部中心位移倍率 |
+| `--orientation-scale` | `1.0` | — | 手柄旋转 → 末端旋转倍率 |
 | `--max-joint-speed-rad-s` | `2.0` | **5.5** | q1–q3 速度上限（rad/s） |
 | `--max-joint-acceleration-rad-s2` | `8.0` | **20** | q1–q3 加速度上限（rad/s²） |
 | `--wrist-speed-rad-s` | —（同臂部） | **12** | q4–q6 速度上限（rad/s） |
@@ -156,14 +148,6 @@ PICO 手柄位姿（XRoboToolkit V1 TCP / Isaac CloudXR）
 
 包名符合 `lerobot_teleoperator_*` 约定，导入即把 `rebot_vr` 注册进 LeRobot 的遥操器 registry。但 LeRobot 0.6 的通用 `teleoperate/record` 循环**不会向 teleoperator 发送机器人反馈**，而本插件的笛卡尔控制闭环依赖反馈保证安全，因此该路径会**直接报错失败**（fail-closed），不会退化为开环关节控制。实机请一律使用 `rebot-vr-teleoperate`。
 
-## 测试
-
-```bash
-# LeRobot 虚拟环境中、仓库根目录下
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest -q
-```
-
-共 57 个单元测试，覆盖 V1 流解码与样本校验、离合相对位姿映射、闭式腕部解、命令整形、安全状态机与 LeRobot 插件注册。
 
 ## 故障排除
 
