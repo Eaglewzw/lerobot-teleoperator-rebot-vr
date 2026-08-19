@@ -39,16 +39,19 @@ rebot-vr-print --backend xrobotoolkit_v1 --host 0.0.0.0 --port 63901 --hand righ
 
 检查 `tracking=true`、`grip`/`trigger` 范围 0-1、位置姿态跟随手部运动。
 
-### 2. 实机遥操
+### 2. 实机遥操（最大速度）
 
 ```bash
-rebot-vr-teleoperate \
+rebot-vr-teleoperate 
   --robot-port /dev/ttyACM0 \
-  --backend xrobotoolkit_v1 \
-  --position-scale 1.0 \
-  --orientation-scale 1.0 \
-  --max-joint-speed-rad-s 0.4 \
-  --max-joint-acceleration-rad-s2 1.0
+  --backendxrobotoolkit_v1 \             
+  --position-scale 1 \
+  --orientation-scale 1 \                                                                      
+  --max-joint-speed-rad-s 5.5 \ 
+  --max-joint-acceleration-rad-s2 20 \                                                
+  --wrist-speed-rad-s 12 \
+  --wrist-acceleration-rad-s2 60 \                                                         
+  --max-relative-target-deg 20
 ```
 
 启动后机械臂限速移动到起始姿态，然后：
@@ -95,6 +98,15 @@ q4-q6 可单独设置更高上限（达妙 4310 硬件能力高于 4340P）：
 | `--max-relative-target-deg` | 5 | follower 相对目标保护 |
 | `--gripper-torque-ratio` | 0.2 | 夹爪最大夹持力比例 |
 | `--fps` | 60 | 主循环频率 |
+
+B601-DM 的硬件上限：
+
+| 关节 | 电机 | 空载最大 | 额定 |
+|---|---|---|---|
+| q1-q3 | 达妙 DM-J4340P-2EC（40:1） | **5.5 rad/s**（315°/s） | 3.8 rad/s |
+| q4-q6 | 达妙 DM-J4310-2EC（10:1） | **20.9 rad/s**（1200°/s） | 12.6 rad/s |
+
+生产/采集推荐上限：`--max-joint-speed-rad-s 5.5 --wrist-speed-rad-s 12 --max-joint-acceleration-rad-s2 20 --wrist-acceleration-rad-s2 60`。`--max-relative-target-deg` 应 ≥ 最大速度°/s ÷ fps。加速度建议从低值分档上调（10 → 20 → 40 → 60），每档观察 `wrist_clip_deg` 和跳变冲击。
 
 完整参数：`rebot-vr-teleoperate --help`。详细设计文档：[CONTROL_DESIGN.md](docs/CONTROL_DESIGN.md)、[INVERSE_KINEMATICS_DESIGN.md](docs/INVERSE_KINEMATICS_DESIGN.md)。
 
