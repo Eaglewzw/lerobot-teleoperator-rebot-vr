@@ -1,0 +1,70 @@
+<?xml version="1.0"?>
+<!--
+  Kinematics-only B601-DM chain. Joint origins, axes and limits are copied
+  from reBotArmController_ROS2's reBot-DevArm_fixend.urdf. This mesh-free
+  model is the kinematic truth used by the VR IK controller.
+-->
+<robot name="rebot_b601_dm_kinematics">
+  <link name="base_link"/>
+  <link name="link1"/>
+  <link name="link2"/>
+  <link name="link3"/>
+  <link name="link4"/>
+  <link name="link5"/>
+  <link name="link6"/>
+  <link name="end_link"/>
+  <link name="gripper_end"/>
+
+  <joint name="joint1" type="revolute">
+    <origin xyz="-8.416E-05 0 0.08465" rpy="0 0 0"/>
+    <parent link="base_link"/>
+    <child link="link1"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.8" upper="2.8" effort="27" velocity="50"/>
+  </joint>
+  <joint name="joint2" type="revolute">
+    <origin xyz="0.020084 0.031625 0.05555" rpy="-1.5708 0 0"/>
+    <parent link="link1"/>
+    <child link="link2"/>
+    <axis xyz="0 0 -1"/>
+    <limit lower="-3.14" upper="0" effort="27" velocity="50"/>
+  </joint>
+  <joint name="joint3" type="revolute">
+    <origin xyz="-0.264 0 0" rpy="0 0 0"/>
+    <parent link="link2"/>
+    <child link="link3"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14" upper="0" effort="27" velocity="50"/>
+  </joint>
+  <joint name="joint4" type="revolute">
+    <origin xyz="0.2426 -0.054 -0.001625" rpy="0 0 0"/>
+    <parent link="link3"/>
+    <child link="link4"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-1.87" upper="1.57" effort="7" velocity="200"/>
+  </joint>
+  <joint name="joint5" type="revolute">
+    <origin xyz="0.078308 -0.0375 -0.03" rpy="-1.5708 0 0"/>
+    <parent link="link4"/>
+    <child link="link5"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-1.57" upper="1.57" effort="7" velocity="200"/>
+  </joint>
+  <joint name="joint6" type="revolute">
+    <origin xyz="0.028008 0 0.04" rpy="0 1.5708 0"/>
+    <parent link="link5"/>
+    <child link="link6"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14" upper="3.14" effort="7" velocity="200"/>
+  </joint>
+  <joint name="end_joint" type="fixed">
+    <origin xyz="0 0 0.15539" rpy="0 -1.5708 3.1415"/>
+    <parent link="link6"/>
+    <child link="end_link"/>
+  </joint>
+  <joint name="gripper_end_joint" type="fixed">
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <parent link="end_link"/>
+    <child link="gripper_end"/>
+  </joint>
+</robot>

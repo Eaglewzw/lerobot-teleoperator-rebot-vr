@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+# Keep underscores in Core Metadata so LeRobot's current plugin scanner, which checks
+# the literal ``lerobot_teleoperator_`` prefix, discovers the distribution. Package
+# indexes normalize this to the same public name: lerobot-teleoperator-rebot-vr.
+name = "lerobot_teleoperator_rebot_vr"
+version = "0.3.3"
+description = "PICO 4 VR teleoperator plugin for the Seeed Studio reBot B601-DM"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+dependencies = [
+    "lerobot[rebot]>=0.6.0,<0.7.0",
+    "scipy>=1.14",
+    "numpy",
+    "pin>=3.9.0,<5",
+]
+
+[project.optional-dependencies]
+isaac = ["isaacteleop[cloudxr,retargeters-lite]~=1.3.131"]
+test = ["pytest>=8"]
+
+[project.scripts]
+rebot-vr-print = "lerobot_teleoperator_rebot_vr.print_vr_data:main"
+rebot-vr-teleoperate = "lerobot_teleoperator_rebot_vr.teleoperate_real:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+lerobot_teleoperator_rebot_vr = ["assets/*.urdf"]
+
+[tool.setuptools.data-files]
+"share/doc/lerobot_teleoperator_rebot_vr" = ["docs/CONTROL_DESIGN.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
