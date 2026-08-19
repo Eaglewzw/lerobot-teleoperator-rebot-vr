@@ -12,103 +12,85 @@ PICO 手柄位姿
   → LeRobot RebotB601Follower
 ```
 
-**按钮映射**：Grip 按住激活遥操、松开保持；Trigger 控制夹爪（0=张开，1=闭合）；A/X 返回起始姿态，B/Y 返回六轴零点。
+| 控制 | 行为 |
+|---|---|
+| Grip | 按住激活遥操，松开保持当前姿态 |
+| Trigger | 夹爪开合（`0` 张开，`1` 闭合） |
+| A / X | 平滑返回起始姿态 |
+| B / Y | 平滑返回六轴零点 |
 
 ## 安装
 
-要求 Python 3.12+、LeRobot `>=0.6.0,<0.7.0`。
+要求 Python 3.12+、LeRobot `>=0.6.0,<0.7.0`。XRoboToolkit V1 无需额外依赖；Isaac/CloudXR 后端安装 `[isaac]` extra。
 
 ```bash
-# 安装到 LeRobot 的 .venv
 uv pip install \
   --python /home/verser/Python/lerobot/.venv/bin/python \
   -e /home/verser/Python/lerobot-teleoperator-rebot-vr
-
 source /home/verser/Python/lerobot/.venv/bin/activate
 ```
 
-XRoboToolkit V1 不需要额外依赖。Isaac/CloudXR 后端需安装 `[isaac]` extra。
+## 快速开始
 
-## 遥操机械臂
-
-### 1. 先测试 VR 数据（不连机械臂）
+### 1. 测试 VR 数据（不连机械臂）
 
 ```bash
 rebot-vr-print --backend xrobotoolkit_v1 --host 0.0.0.0 --port 63901 --hand right --rate 10
 ```
 
-检查 `tracking=true`、`grip`/`trigger` 范围 0-1、位置姿态跟随手部运动。
+检查 `tracking=true`、`grip`/`trigger` 范围 0–1、位姿跟随手部运动。同一时间只能有一个程序监听 63901。
 
-### 2. 实机遥操（最大速度）
-
-```bash
-rebot-vr-teleoperate 
-  --robot-port /dev/ttyACM0 \
-  --backendxrobotoolkit_v1 \             
-  --position-scale 1 \
-  --orientation-scale 1 \                                                                      
-  --max-joint-speed-rad-s 5.5 \ 
-  --max-joint-acceleration-rad-s2 20 \                                                
-  --wrist-speed-rad-s 12 \
-  --wrist-acceleration-rad-s2 60 \                                                         
-  --max-relative-target-deg 20
-```
-
-启动后机械臂限速移动到起始姿态，然后：
-- **完全松开 Grip 一次**（解除 require-release 状态）
-- **按住 Grip** 激活遥操
-- **松开 Grip** 保持当前姿态
-- 按 **A/X** 返回起始姿态，按 **B/Y** 返回六轴零点
-
-### 分轴腕部速度（可选）
-
-q4-q6 可单独设置更高上限（达妙 4310 硬件能力高于 4340P）：
+### 2. 实机遥操
 
 ```bash
---wrist-speed-rad-s 0.8 --wrist-acceleration-rad-s2 3.0 --wrist-relative-target-deg 5.0
+rebot-vr-teleoperate --robot-port /dev/ttyACM0 --backend xrobotoolkit_v1
 ```
 
-缺省时回退到对应臂部参数，旧命令行为不变。
+启动后机械臂限速移动到起始姿态；**先完全松开 Grip 一次**，再按住 Grip 激活遥操。速度与加速度参数见[参数表](#参数)。首次使用建议按[分阶段测试](#3-分阶段测试)流程操作。
 
-### 安全测试
+### 3. 分阶段测试
 
-首次使用建议分阶段：
+| 阶段 | 目的 | 参数 |
+|---|---|---|
+| 1 | 仅位置（姿态锁定） | `--position-scale 0.2 --orientation-scale 0 --max-joint-speed-rad-s 0.1` |
+| 2 | 仅姿态 | `--position-scale 0 --orientation-scale 0.3 --max-joint-speed-rad-s 0.1` |
+| 3 | 完整映射 | `--position-scale 1.0 --orientation-scale 1.0 --max-joint-speed-rad-s 0.4` |
 
-```bash
-# 阶段1：仅位置（姿态锁定），低速
---position-scale 0.2 --orientation-scale 0 --max-joint-speed-rad-s 0.1
-
-# 阶段2：仅姿态，低速
---position-scale 0 --orientation-scale 0.3 --max-joint-speed-rad-s 0.1
-
-# 阶段3：完整映射，正常速度
---position-scale 1.0 --orientation-scale 1.0 --max-joint-speed-rad-s 0.4
-```
-
-## 关键参数
+## 参数
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
-| `--position-scale` | 1.0 | 手柄位移到腕部中心位移的倍率 |
-| `--orientation-scale` | 1.0 | 手柄旋转到末端旋转的倍率 |
-| `--max-joint-speed-rad-s` | 2.0 | q1-q3 速度上限（rad/s） |
+| `--position-scale` | `1.0` | 手柄位移 → 腕部中心位移倍率 |
+| `--orientation-scale` | `1.0` | 手柄旋转 → 末端旋转倍率 |
+| `--max-joint-speed-rad-s` | `2.0` | q1-q3 速度上限（rad/s） |
+| `--max-joint-acceleration-rad-s2` | `8.0` | q1-q3 加速度上限（rad/s²） |
 | `--wrist-speed-rad-s` | 回退臂部 | q4-q6 速度上限 |
-| `--max-joint-acceleration-rad-s2` | 8.0 | q1-q3 加速度上限 |
 | `--wrist-acceleration-rad-s2` | 回退臂部 | q4-q6 加速度上限 |
-| `--max-relative-target-deg` | 5 | follower 相对目标保护 |
-| `--gripper-torque-ratio` | 0.2 | 夹爪最大夹持力比例 |
-| `--fps` | 60 | 主循环频率 |
+| `--max-relative-target-deg` | `5` | follower 相对目标保护（deg）；q4-q6 可用 `--wrist-relative-target-deg` 单独设置 |
+| `--gripper-torque-ratio` | `0.2` | 夹爪最大夹持力比例 |
+| `--fps` | `60` | 主循环频率 |
 
-B601-DM 的硬件上限：
+完整参数：`rebot-vr-teleoperate --help`。
+
+### 最大速度与加速度
+
+B601-DM 电机硬件上限：
 
 | 关节 | 电机 | 空载最大 | 额定 |
 |---|---|---|---|
 | q1-q3 | 达妙 DM-J4340P-2EC（40:1） | **5.5 rad/s**（315°/s） | 3.8 rad/s |
 | q4-q6 | 达妙 DM-J4310-2EC（10:1） | **20.9 rad/s**（1200°/s） | 12.6 rad/s |
 
-生产/采集推荐上限：`--max-joint-speed-rad-s 5.5 --wrist-speed-rad-s 12 --max-joint-acceleration-rad-s2 20 --wrist-acceleration-rad-s2 60`。`--max-relative-target-deg` 应 ≥ 最大速度°/s ÷ fps。加速度建议从低值分档上调（10 → 20 → 40 → 60），每档观察 `wrist_clip_deg` 和跳变冲击。
+生产/采集推荐上限（保留余量）：
 
-完整参数：`rebot-vr-teleoperate --help`。详细设计文档：[CONTROL_DESIGN.md](docs/CONTROL_DESIGN.md)、[INVERSE_KINEMATICS_DESIGN.md](docs/INVERSE_KINEMATICS_DESIGN.md)。
+```bash
+rebot-vr-teleoperate \
+  --max-joint-speed-rad-s 5.5 --max-joint-acceleration-rad-s2 20 \
+  --wrist-speed-rad-s 12 --wrist-acceleration-rad-s2 60 \
+  --max-relative-target-deg 20
+```
+
+注意：`--max-relative-target-deg` 应 ≥ 最大速度 °/s ÷ fps，否则会掐死实际速度；加速度建议从低值分档上调（10 → 20 → 40 → 60），每档观察 `wrist_clip_deg` 与跳变冲击。
 
 ## 测试
 
@@ -127,3 +109,5 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYTHONPATH=src \
 | 按住 Grip 仍为 `idle` | 完全松开 Grip 一次再重新按住 |
 | `state=hold` | 反馈异常，检查 CAN/标定；连续 5 帧后保留扭矩受控退出 |
 | 退出后机械臂下坠 | 退出前托住机械臂；默认断开时关闭扭矩 |
+
+设计文档：[CONTROL_DESIGN.md](docs/CONTROL_DESIGN.md) · [INVERSE_KINEMATICS_DESIGN.md](docs/INVERSE_KINEMATICS_DESIGN.md)
