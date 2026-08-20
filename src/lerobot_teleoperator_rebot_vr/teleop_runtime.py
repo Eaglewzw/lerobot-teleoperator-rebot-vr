@@ -45,6 +45,7 @@ def move_to_initial_pose(robot, *, target_rad: np.ndarray, lower_limit_rad: np.n
         previous_loop_s = loop_started_s
         command_deg = np.rad2deg(status.command_rad)
         action = {f"{name}.pos": float(command_deg[index]) for index, name in enumerate(ARM_JOINT_NAMES)}
+        # Startup owns only q1-q6; fresh Tracking later applies the Trigger mapping.
         action[f"{GRIPPER_NAME}.pos"] = gripper_actual_deg
         sent_action = robot.send_action(action)
         sent_deg = np.array([float(sent_action[f"{name}.pos"]) for name in ARM_JOINT_NAMES])

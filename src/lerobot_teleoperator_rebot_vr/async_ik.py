@@ -6,8 +6,6 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .pose_mapping import PoseTarget
-
 
 def _readonly_vector(value: object, size: int, name: str) -> np.ndarray:
     array = np.asarray(value, dtype=np.float64)
@@ -25,6 +23,8 @@ class IKRequest:
     sample_id: int
     target_position: np.ndarray
     target_rotation: np.ndarray
+    target_linear_velocity_m_s: np.ndarray
+    target_angular_velocity_rad_s: np.ndarray
     q_seed: np.ndarray
     q_actual: np.ndarray
     dq_previous: np.ndarray
@@ -32,18 +32,14 @@ class IKRequest:
     dt: float
     submitted_monotonic_ns: int
 
-    def __init__(self, *, sequence: int, generation: int, sample_id: int | None = None,
-                 target_position: np.ndarray | None = None, target_rotation: np.ndarray | None = None,
-                 q_seed: np.ndarray | None = None, submitted_monotonic_ns: int | None = None,
-                 target: PoseTarget | None = None, q_actual: np.ndarray | None = None,
+    def __init__(self, *, sequence: int, generation: int, sample_id: int,
+                 target_position: np.ndarray, target_rotation: np.ndarray,
+                 q_seed: np.ndarray, submitted_monotonic_ns: int | None = None,
+                 q_actual: np.ndarray | None = None,
                  dq_previous: np.ndarray | None = None, q_nominal: np.ndarray | None = None,
+                 target_linear_velocity_m_s: np.ndarray | None = None,
+                 target_angular_velocity_rad_s: np.ndarray | None = None,
                  dt: float = 0.01) -> None:
-        if target is not None:
-            if sample_id is not None or target_position is not None or target_rotation is not None:
-                raise ValueError("use either target or explicit target fields")
-            sample_id, target_position, target_rotation = target.sample_id, target.position, target.rotation
-        if sample_id is None or target_position is None or target_rotation is None or q_seed is None:
-            raise ValueError("sample_id, target pose, and q_seed are required")
         sequence = int(sequence); generation = int(generation); sample_id = int(sample_id)
         submitted = time.monotonic_ns() if submitted_monotonic_ns is None else int(submitted_monotonic_ns)
         if sequence <= 0 or generation < 0 or sample_id < 0 or submitted < 0:
@@ -58,20 +54,34 @@ class IKRequest:
         object.__setattr__(self, "sample_id", sample_id)
         object.__setattr__(self, "target_position", _readonly_vector(target_position, 3, "target_position"))
         object.__setattr__(self, "target_rotation", rotation.copy())
+        object.__setattr__(
+            self,
+            "target_linear_velocity_m_s",
+            _readonly_vector(
+                np.zeros(3)
+                if target_linear_velocity_m_s is None
+                else target_linear_velocity_m_s,
+                3,
+                "target_linear_velocity_m_s",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "target_angular_velocity_rad_s",
+            _readonly_vector(
+                np.zeros(3)
+                if target_angular_velocity_rad_s is None
+                else target_angular_velocity_rad_s,
+                3,
+                "target_angular_velocity_rad_s",
+            ),
+        )
         object.__setattr__(self, "q_seed", _readonly_vector(q_seed, 6, "q_seed"))
         object.__setattr__(self, "q_actual", _readonly_vector(q_seed if q_actual is None else q_actual, 6, "q_actual"))
         object.__setattr__(self, "dq_previous", _readonly_vector(np.zeros(6) if dq_previous is None else dq_previous, 6, "dq_previous"))
         object.__setattr__(self, "q_nominal", _readonly_vector(q_seed if q_nominal is None else q_nominal, 6, "q_nominal"))
         object.__setattr__(self, "dt", float(dt))
         object.__setattr__(self, "submitted_monotonic_ns", submitted)
-
-    @property
-    def target(self) -> PoseTarget:
-        return PoseTarget(self.sample_id, self.target_position, self.target_rotation)
-
-    @property
-    def q_seed_rad(self) -> np.ndarray:
-        return self.q_seed
 
 
 @dataclass(frozen=True)
@@ -84,17 +94,30 @@ class IKResult:
     position_error_m: float
     solve_time_ms: float
     reason: str = ""
+    orientation_error_rad: float = float("nan")
+    sigma_min: float = float("nan")
+    condition_number: float = float("nan")
+    damping: float = float("nan")
+    orientation_weight: float = float("nan")
+    joint_velocity_rad_s: np.ndarray | None = None
+    submitted_monotonic_ns: int = 0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "q_target_rad", _readonly_vector(self.q_target_rad, 6, "q_target_rad"))
+        if self.joint_velocity_rad_s is not None:
+            object.__setattr__(
+                self,
+                "joint_velocity_rad_s",
+                _readonly_vector(
+                    self.joint_velocity_rad_s, 6, "joint_velocity_rad_s"
+                ),
+            )
         if self.sequence <= 0 or self.generation < 0 or self.sample_id < 0:
             raise ValueError("invalid result identity")
+        if self.submitted_monotonic_ns < 0:
+            raise ValueError("submitted_monotonic_ns must be non-negative")
         if not np.isfinite(self.solve_time_ms) or self.solve_time_ms < 0.0:
             raise ValueError("solve_time_ms must be finite and non-negative")
-
-    @property
-    def q_goal(self) -> np.ndarray:
-        return self.q_target_rad
 
 
 class LatestOnlyQPIKWorker:
@@ -110,7 +133,6 @@ class LatestOnlyQPIKWorker:
         self._condition = threading.Condition()
         self._pending = None
         self._latest_result = None
-        self._running = False
         self._stop = False
         self._thread = None
         self.submitted = self.solved = self.rejected = 0
@@ -144,11 +166,6 @@ class LatestOnlyQPIKWorker:
         with self._condition:
             return self._latest_result
 
-    @property
-    def has_pending_or_running(self) -> bool:
-        with self._condition:
-            return self._pending is not None or self._running
-
     def _run(self) -> None:
         while True:
             with self._condition:
@@ -158,24 +175,24 @@ class LatestOnlyQPIKWorker:
                     return
                 request = self._pending
                 self._pending = None
-                self._running = True
             result = self._solve(request)
             with self._condition:
                 self._latest_result = result
-                self._running = False
 
     def _solve(self, request: IKRequest) -> IKResult:
         started = time.monotonic_ns()
         try:
-            q, success, error, solve_ms, reason = self.solver.solve(
+            solve_result = self.solver.solve(
                 target_position=request.target_position, target_rotation=request.target_rotation,
                 q_actual=request.q_actual, dq_previous=request.dq_previous, dt=request.dt,
                 q_nominal=request.q_nominal, max_joint_speed=self.max_speed,
                 max_joint_acceleration=self.max_acceleration,
+                target_linear_velocity_m_s=request.target_linear_velocity_m_s,
+                target_angular_velocity_rad_s=request.target_angular_velocity_rad_s,
             )
-            q = np.asarray(q, dtype=np.float64)
+            q = np.asarray(solve_result.q_target_rad, dtype=np.float64)
             valid = q.shape == (6,) and np.all(np.isfinite(q))
-            if not success or not valid:
+            if not solve_result.success or not valid:
                 self.rejected += 1
                 q = request.q_seed.copy()
             else:
@@ -183,7 +200,27 @@ class LatestOnlyQPIKWorker:
                 # Do not add this increment to q_seed again: doing so turns
                 # feedback latency into an uncontrolled target integrator.
                 self.solved += 1
-            return IKResult(request.generation, request.sequence, request.sample_id, q, bool(success and valid), float(error) if np.isfinite(error) else float("nan"), float(solve_ms), reason)
+            return IKResult(
+                generation=request.generation,
+                sequence=request.sequence,
+                sample_id=request.sample_id,
+                q_target_rad=q,
+                success=bool(solve_result.success and valid),
+                position_error_m=(
+                    float(solve_result.position_error_m)
+                    if np.isfinite(solve_result.position_error_m)
+                    else float("nan")
+                ),
+                solve_time_ms=float(solve_result.solve_time_ms),
+                reason=solve_result.reason,
+                orientation_error_rad=float(solve_result.orientation_error_rad),
+                sigma_min=float(solve_result.sigma_min),
+                condition_number=float(solve_result.condition_number),
+                damping=float(solve_result.damping),
+                orientation_weight=float(solve_result.orientation_weight),
+                joint_velocity_rad_s=solve_result.joint_velocity_rad_s,
+                submitted_monotonic_ns=request.submitted_monotonic_ns,
+            )
         except Exception as exc:
             self.rejected += 1
             return IKResult(request.generation, request.sequence, request.sample_id, request.q_seed.copy(), False, float("nan"), (time.monotonic_ns() - started) * 1e-6, f"solver_exception:{type(exc).__name__}")

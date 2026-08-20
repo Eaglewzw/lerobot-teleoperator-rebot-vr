@@ -368,7 +368,12 @@ def test_secondary_button_edge_returns_zero_smoothly_and_requires_grip_release()
     assert active.state is TeleopState.ACTIVE
 
     action, status = controller.update(
-        _legacy_frame(now + 2, squeeze=1.0, secondary_button=True),
+        _legacy_frame(
+            now + 2,
+            squeeze=1.0,
+            trigger=1.0,
+            secondary_button=True,
+        ),
         observation,
         0.05,
         now_ns=now + 2,
@@ -379,12 +384,21 @@ def test_secondary_button_edge_returns_zero_smoothly_and_requires_grip_release()
     assert not status.home_requested
     assert status.state is TeleopState.IDLE
     assert status.target_deg[:6] == pytest.approx(np.zeros(6))
+    assert status.gripper_target_deg == pytest.approx(
+        controller.config.gripper_closed_deg
+    )
+    assert action["gripper.pos"] > observation["gripper.pos"]
     assert np.all(np.abs(command_deg) < np.abs(actual_deg))
     assert command_deg != pytest.approx(np.zeros(6))
     generation = status.generation
 
     _, held = controller.update(
-        _legacy_frame(now + 3, squeeze=1.0, secondary_button=True),
+        _legacy_frame(
+            now + 3,
+            squeeze=1.0,
+            trigger=1.0,
+            secondary_button=True,
+        ),
         observation,
         0.02,
         now_ns=now + 3,
@@ -392,31 +406,58 @@ def test_secondary_button_edge_returns_zero_smoothly_and_requires_grip_release()
     assert not held.zero_requested
     assert held.state is TeleopState.IDLE
     assert held.generation == generation
+    assert held.gripper_target_deg == pytest.approx(
+        controller.config.gripper_closed_deg
+    )
 
-    controller.update(
-        _legacy_frame(now + 4, squeeze=1.0),
+    _, trigger_noise_ignored = controller.update(
+        _legacy_frame(now + 4, squeeze=1.0, trigger=0.98),
         observation,
         0.02,
         now_ns=now + 4,
     )
-    _, still_idle = controller.update(
-        _legacy_frame(now + 5, squeeze=1.0),
+    assert trigger_noise_ignored.gripper_target_deg == pytest.approx(
+        controller.config.gripper_closed_deg
+    )
+    assert not trigger_noise_ignored.gripper_trigger_active
+
+    _, trigger_control_rearmed = controller.update(
+        _legacy_frame(now + 5, squeeze=1.0, trigger=0.8),
         observation,
         0.02,
         now_ns=now + 5,
     )
-    assert still_idle.state is TeleopState.IDLE
+    assert trigger_control_rearmed.gripper_target_deg == pytest.approx(
+        controller.config.gripper_open_deg
+        + 0.8
+        * (controller.config.gripper_closed_deg - controller.config.gripper_open_deg)
+    )
+    assert trigger_control_rearmed.gripper_trigger_active
+
     controller.update(
-        _legacy_frame(now + 6, squeeze=0.0),
+        _legacy_frame(now + 6, squeeze=1.0),
         observation,
         0.02,
         now_ns=now + 6,
     )
-    _, rearmed = controller.update(
+    _, still_idle = controller.update(
         _legacy_frame(now + 7, squeeze=1.0),
         observation,
         0.02,
         now_ns=now + 7,
+    )
+    assert still_idle.state is TeleopState.IDLE
+    controller.update(
+        _legacy_frame(now + 8, squeeze=0.0),
+        observation,
+        0.02,
+        now_ns=now + 8,
+    )
+    _, rearmed = controller.update(
+        _legacy_frame(now + 9, squeeze=1.0),
+        observation,
+        0.02,
+        now_ns=now + 9,
     )
     assert rearmed.state is TeleopState.ACTIVE
 
@@ -440,6 +481,7 @@ def test_command_shaper_formula_and_controller_dt_cap() -> None:
         xr_to_base_rotation=DEFAULT_XR_TO_WORLD,
         config=CartesianControlConfig(
             stale_timeout_s=1.0,
+            gripper_open_deg=-140.0,
             gripper_max_speed_deg_s=100.0,
             gripper_max_acceleration_deg_s2=100.0,
         ),
@@ -448,15 +490,15 @@ def test_command_shaper_formula_and_controller_dt_cap() -> None:
     now = time.monotonic_ns()
     controller.update(
         _legacy_frame(now, trigger=0.0),
-        _observation(),
+        _observation(gripper=-140.0),
         0.1,
         now_ns=now,
     )
     action, _ = controller.update(
         _legacy_frame(now + 1, trigger=1.0),
-        _observation(),
+        _observation(gripper=-140.0),
         0.1,
         now_ns=now + 1,
     )
     # Controller caps dt to 0.05: dv=5 deg/s and dx=0.25 deg.
-    assert action["gripper.pos"] == pytest.approx(-269.75)
+    assert action["gripper.pos"] == pytest.approx(-139.75)

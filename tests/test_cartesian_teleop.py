@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import time
 import threading
+import time
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -36,6 +37,7 @@ from lerobot_teleoperator_rebot_vr.teleoperate_real import (
     _send_feedback_hold_action,
     _status_line,
     _validate_args,
+    _move_to_initial_pose,
 )
 
 
@@ -131,16 +133,24 @@ class ImmediateIKWorker:
         self.submitted += 1
         self.solved += 1
         self.requests.append(request)
-        q_target = request.q_seed_rad.copy()
-        q_target[:3] = request.target.position
+        q_target = request.q_seed.copy()
+        q_target[:3] = request.target_position
+        joint_velocity = (q_target - request.q_actual) / request.dt
         self.result = IKResult(
             generation=request.generation,
             sequence=request.sequence,
-            sample_id=request.target.sample_id,
+            sample_id=request.sample_id,
             q_target_rad=q_target,
             success=True,
             position_error_m=0.0,
             solve_time_ms=0.1,
+            orientation_error_rad=0.02,
+            sigma_min=0.12,
+            condition_number=8.0,
+            damping=1e-3,
+            orientation_weight=2.0,
+            joint_velocity_rad_s=joint_velocity,
+            submitted_monotonic_ns=request.submitted_monotonic_ns,
         )
 
     def latest_result(self) -> IKResult | None:
@@ -183,6 +193,8 @@ def test_closed_loop_starts_from_actual_pose_and_atomically_applies_arm_and_wris
             stale_timeout_s=1.0,
             max_joint_speed_rad_s=1000.0,
             max_joint_acceleration_rad_s2=1000.0,
+            arm_command_lookahead_s=0.02,
+            wrist_command_lookahead_s=0.02,
         ),
         ik_worker=worker,
     )
@@ -222,7 +234,21 @@ def test_closed_loop_starts_from_actual_pose_and_atomically_applies_arm_and_wris
         np.rad2deg(expected_rad)
     )
     request = worker.requests[-1]
-    assert request.target.sample_id == now + 40_000_000
+    assert request.sample_id == now + 40_000_000
+    assert request.target_linear_velocity_m_s == pytest.approx([5.0, 0.0, 0.0])
+    assert request.target_angular_velocity_rad_s == pytest.approx(
+        Rotation.from_matrix(rotation_base).as_rotvec() / 0.02
+    )
+    assert status.sigma_min == pytest.approx(0.12)
+    assert status.condition_number == pytest.approx(8.0)
+    assert status.current_damping == pytest.approx(1e-3)
+    assert status.current_orientation_weight == pytest.approx(2.0)
+    assert status.qp_solve_time_ms == pytest.approx(0.1)
+    assert status.qp_result_age_ms == pytest.approx(0.0)
+    assert status.tcp_position_error_m == pytest.approx(0.1)
+    assert status.qp_joint_velocity_rad_s == pytest.approx(
+        worker.result.joint_velocity_rad_s
+    )
 
 
 def test_completed_qp_is_consumed_before_next_submission_and_keeps_its_own_velocity() -> None:
@@ -277,6 +303,69 @@ def test_completed_qp_is_consumed_before_next_submission_and_keeps_its_own_veloc
     assert worker.requests[-1].dq_previous != pytest.approx(outer_velocity)
 
 
+def test_active_qp_command_uses_feedback_bounded_lookahead_without_arm_reshaping(
+    monkeypatch,
+) -> None:
+    arm_shape_calls = 0
+    original_shape = cartesian_controller_module.shape_joint_position_command
+
+    def recording_shape(**kwargs):
+        nonlocal arm_shape_calls
+        if np.asarray(kwargs["previous_position"]).shape == (6,):
+            arm_shape_calls += 1
+        return original_shape(**kwargs)
+
+    monkeypatch.setattr(
+        cartesian_controller_module,
+        "shape_joint_position_command",
+        recording_shape,
+    )
+    worker = ImmediateIKWorker()
+    controller = FullBodyQPIKController(
+        FakeKinematics(),
+        xr_to_base_rotation=XR_TO_BASE,
+        config=CartesianControlConfig(
+            position_filter_hz=0.0,
+            orientation_filter_hz=0.0,
+            position_deadband_m=0.0,
+            orientation_deadband_rad=0.0,
+            stale_timeout_s=1.0,
+            max_joint_speed_rad_s=1000.0,
+            max_joint_acceleration_rad_s2=1000.0,
+            arm_command_lookahead_s=0.05,
+            wrist_command_lookahead_s=0.025,
+            max_command_feedback_error_deg=1.8,
+        ),
+        ik_worker=worker,
+    )
+    now = time.monotonic_ns()
+    observation = _observation()
+    controller.update(_frame(now), observation, 0.02, now_ns=now)
+    controller.update(
+        _frame(now + 20_000_000, grip=1.0),
+        observation,
+        0.02,
+        now_ns=now + 20_000_000,
+    )
+    arm_shape_calls = 0
+
+    action, status = controller.update(
+        _frame(now + 40_000_000, position=(0.1, 0.0, 0.0), grip=1.0),
+        observation,
+        0.02,
+        now_ns=now + 40_000_000,
+    )
+
+    assert arm_shape_calls == 0
+    assert status.target_deg[0] == pytest.approx(np.rad2deg(0.25))
+    assert status.command_deg[0] == pytest.approx(1.8)
+    assert action["shoulder_pan.pos"] == pytest.approx(1.8)
+    assert status.target_linear_velocity_m_s == pytest.approx([5.0, 0.0, 0.0])
+    rendered = _status_line(status)
+    assert "result_age_ms=0.000" in rendered
+    assert "target_twist linear_m_s/angular_rad_s=" in rendered
+
+
 def test_wrist_target_updates_when_position_ik_fails() -> None:
     worker = FailingIKWorker()
     controller = FullBodyQPIKController(
@@ -320,43 +409,94 @@ def test_wrist_target_updates_when_position_ik_fails() -> None:
         np.deg2rad([0.0, -60.0, -70.0])
     )
     assert status.orientation_error_deg == pytest.approx(np.rad2deg(0.3))
-    assert status.wrist_clip_deg == pytest.approx(0.0)
     rendered_status = _status_line(status)
     assert "orientation_error_deg=17.189" in rendered_status
-    assert "wrist_clip_deg=0.000" in rendered_status
 
 
-def test_trigger_independently_maps_open_to_closed_gripper_and_reports_diagnostics() -> None:
+def test_fresh_tracking_immediately_maps_trigger_to_gripper() -> None:
     controller = FullBodyQPIKController(
         FakeKinematics(),
         xr_to_base_rotation=XR_TO_BASE,
         config=CartesianControlConfig(
             stale_timeout_s=1.0,
+            gripper_open_deg=-140.0,
             gripper_max_speed_deg_s=10_000.0,
             gripper_max_acceleration_deg_s2=1_000_000_000.0,
         ),
         ik_worker=ImmediateIKWorker(),
     )
     now = time.monotonic_ns()
-    observation = _observation(gripper=-270.0)
+    observation = _observation(gripper=-70.0)
 
-    opened, open_status = controller.update(
+    held, held_status = controller.update(
         _frame(now, trigger=0.0), observation, 0.1, now_ns=now
     )
-    closed, closed_status = controller.update(
-        _frame(now + 10_000_000, trigger=1.0),
+    middle, middle_status = controller.update(
+        _frame(now + 10_000_000, trigger=0.5),
         observation,
         0.1,
         now_ns=now + 10_000_000,
     )
+    closed, closed_status = controller.update(
+        _frame(now + 20_000_000, trigger=1.0),
+        observation,
+        0.1,
+        now_ns=now + 20_000_000,
+    )
+    opened, open_status = controller.update(
+        _frame(now + 30_000_000, trigger=0.0),
+        observation,
+        0.1,
+        now_ns=now + 30_000_000,
+    )
 
-    assert opened["gripper.pos"] == pytest.approx(-270.0)
-    assert open_status.gripper_target_deg == pytest.approx(-270.0)
+    assert held["gripper.pos"] == pytest.approx(-140.0)
+    assert held_status.gripper_target_deg == pytest.approx(-140.0)
+    assert held_status.gripper_trigger_active
+    assert middle["gripper.pos"] == pytest.approx(-70.0)
+    assert middle_status.gripper_target_deg == pytest.approx(-70.0)
+    assert middle_status.gripper_trigger_active
     assert closed["gripper.pos"] == pytest.approx(0.0)
     assert closed_status.trigger == pytest.approx(1.0)
-    assert closed_status.gripper_actual_deg == pytest.approx(-270.0)
+    assert closed_status.gripper_actual_deg == pytest.approx(-70.0)
     assert closed_status.gripper_target_deg == pytest.approx(0.0)
     assert closed_status.gripper_command_deg == pytest.approx(0.0)
+    assert closed_status.gripper_trigger_active
+    assert opened["gripper.pos"] == pytest.approx(-140.0)
+    assert open_status.gripper_target_deg == pytest.approx(-140.0)
+
+
+@pytest.mark.parametrize("open_deg", (-80.0, -100.0, -140.0))
+def test_cli_gripper_open_endpoint_reaches_final_action(open_deg: float) -> None:
+    args = _parser().parse_args(["--gripper-open-deg", str(open_deg)])
+    controller = FullBodyQPIKController(
+        FakeKinematics(),
+        xr_to_base_rotation=XR_TO_BASE,
+        config=CartesianControlConfig(
+            stale_timeout_s=1.0,
+            gripper_open_deg=args.gripper_open_deg,
+            gripper_closed_deg=args.gripper_closed_deg,
+            gripper_max_speed_deg_s=10_000.0,
+            gripper_max_acceleration_deg_s2=1_000_000_000.0,
+        ),
+        ik_worker=ImmediateIKWorker(),
+    )
+    now = time.monotonic_ns()
+    observation = _observation(gripper=-40.0)
+    controller.update(
+        _frame(now, trigger=0.0), observation, 0.05, now_ns=now
+    )
+    action, status = controller.update(
+        _frame(now + 10_000_000, trigger=0.0),
+        observation,
+        0.05,
+        now_ns=now + 10_000_000,
+    )
+
+    assert status.gripper_trigger_active
+    assert status.gripper_target_deg == pytest.approx(open_deg)
+    assert status.gripper_command_deg == pytest.approx(open_deg)
+    assert action["gripper.pos"] == pytest.approx(open_deg)
 
 
 def test_closed_loop_keeps_gripper_command_inside_follower_tracking_window() -> None:
@@ -365,6 +505,7 @@ def test_closed_loop_keeps_gripper_command_inside_follower_tracking_window() -> 
         xr_to_base_rotation=XR_TO_BASE,
         config=CartesianControlConfig(
             stale_timeout_s=1.0,
+            gripper_open_deg=-140.0,
             gripper_max_speed_deg_s=10_000.0,
             gripper_max_acceleration_deg_s2=100_000.0,
             max_command_feedback_error_deg=1.8,
@@ -372,15 +513,21 @@ def test_closed_loop_keeps_gripper_command_inside_follower_tracking_window() -> 
         ik_worker=ImmediateIKWorker(),
     )
     now = time.monotonic_ns()
-    action, status = controller.update(
-        _frame(now, trigger=1.0),
-        _observation(gripper=-270.0),
+    controller.update(
+        _frame(now, trigger=0.0),
+        _observation(gripper=-140.0),
         0.1,
         now_ns=now,
     )
-    assert action["gripper.pos"] == pytest.approx(-268.2)
+    action, status = controller.update(
+        _frame(now + 10_000_000, trigger=1.0),
+        _observation(gripper=-140.0),
+        0.1,
+        now_ns=now + 10_000_000,
+    )
+    assert action["gripper.pos"] == pytest.approx(-138.2)
     assert status.gripper_target_deg == pytest.approx(0.0)
-    assert status.gripper_command_deg == pytest.approx(-268.2)
+    assert status.gripper_command_deg == pytest.approx(-138.2)
 
 
 def test_single_invalid_feedback_enters_hold_and_recovers_without_command_jump() -> None:
@@ -528,6 +675,8 @@ def test_wrist_and_gripper_cli_options_defaults_and_positive_validation() -> Non
     assert defaults.wrist_acceleration_rad_s2 == pytest.approx(60.0)
     assert defaults.wrist_relative_target_deg == pytest.approx(20.0)
     assert defaults.gripper_relative_target_deg is None
+    assert defaults.gripper_open_deg == pytest.approx(-180.0)
+    assert defaults.gripper_closed_deg == pytest.approx(0.0)
     _validate_args(defaults)
 
     for option in (
@@ -538,6 +687,65 @@ def test_wrist_and_gripper_cli_options_defaults_and_positive_validation() -> Non
     ):
         invalid = parser.parse_args([option, "0"])
         with pytest.raises(ValueError, match="must be positive"):
+            _validate_args(invalid)
+
+
+def test_adaptive_qp_cli_defaults_modes_and_validation() -> None:
+    parser = _parser()
+    help_text = parser.format_help()
+    for option in (
+        "--ik-mode",
+        "--qp-damping-min",
+        "--qp-damping-max",
+        "--qp-orientation-cost-min",
+        "--singularity-threshold",
+        "--singularity-critical-threshold",
+        "--singularity-characteristic-length-m",
+        "--qp-position-gain",
+        "--qp-orientation-gain",
+        "--arm-command-lookahead-ms",
+        "--wrist-command-lookahead-ms",
+    ):
+        assert option in help_text
+
+    defaults = parser.parse_args([])
+    assert defaults.ik_mode == "pose"
+    assert defaults.qp_damping == pytest.approx(1e-3)
+    assert defaults.qp_damping_max == pytest.approx(0.1)
+    assert defaults.qp_orientation_cost == pytest.approx(2.0)
+    assert defaults.qp_orientation_cost_min == pytest.approx(0.05)
+    assert defaults.singularity_threshold == pytest.approx(0.08)
+    assert defaults.singularity_critical_threshold == pytest.approx(0.02)
+    assert defaults.singularity_characteristic_length_m == pytest.approx(0.3)
+    assert defaults.qp_position_gain == pytest.approx(10.0)
+    assert defaults.qp_orientation_gain == pytest.approx(8.0)
+    assert defaults.arm_command_lookahead_ms == pytest.approx(50.0)
+    assert defaults.wrist_command_lookahead_ms == pytest.approx(25.0)
+    _validate_args(defaults)
+
+    position = parser.parse_args(["--ik-mode", "position"])
+    _validate_args(position)
+    assert position.ik_mode == "position"
+
+    invalid = parser.parse_args(
+        [
+            "--singularity-threshold",
+            "0.02",
+            "--singularity-critical-threshold",
+            "0.02",
+        ]
+    )
+    with pytest.raises(ValueError, match="invalid QP parameters"):
+        _validate_args(invalid)
+
+    for option in (
+        "--qp-position-gain",
+        "--qp-orientation-gain",
+        "--arm-command-lookahead-ms",
+        "--wrist-command-lookahead-ms",
+    ):
+        invalid = parser.parse_args([option, "0"])
+        with pytest.raises(ValueError, match="invalid QP parameters"):
             _validate_args(invalid)
 
 
@@ -722,6 +930,49 @@ def test_reference_initial_pose_maps_q2_q3_to_dm_signs_and_moves_with_limits() -
             break
     assert status.done
     assert status.command_rad == pytest.approx(target)
+
+
+def test_initial_pose_motion_holds_measured_gripper_position() -> None:
+    class Robot:
+        def __init__(self) -> None:
+            self.actions: list[dict[str, float]] = []
+
+        def get_observation(self) -> dict[str, float]:
+            return _observation(
+                q_deg=(0.0, -45.0, -45.0, 0.0, 0.0, 0.0),
+                gripper=-37.0,
+            )
+
+        def send_action(self, action: dict[str, float]) -> dict[str, float]:
+            self.actions.append(action.copy())
+            return action
+
+    robot = Robot()
+    target = np.deg2rad([0.0, -45.0, -45.0, 0.0, 0.0, 0.0])
+    args = SimpleNamespace(
+        max_joint_speed_rad_s=0.4,
+        max_joint_acceleration_rad_s2=1.0,
+        initial_move_tolerance_deg=2.0,
+        max_relative_target_deg=20.0,
+        initial_move_timeout=1.0,
+        initial_stall_timeout=0.5,
+        status_rate=1000.0,
+        fps=1000.0,
+        gripper_open_deg=-180.0,
+    )
+
+    reached = _move_to_initial_pose(
+        robot,
+        target_rad=target,
+        lower_limit_rad=np.full(6, -3.0),
+        upper_limit_rad=np.full(6, 3.0),
+        args=args,
+        should_stop=lambda: False,
+    )
+
+    assert reached
+    assert len(robot.actions) == 3
+    assert all(action["gripper.pos"] == -37.0 for action in robot.actions)
 
 
 def test_startup_pose_waits_for_feedback_without_reaching_follower_clamp() -> None:

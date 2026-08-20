@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import signal
 import time
+from dataclasses import replace
 
 import numpy as np
 
@@ -80,11 +81,21 @@ def main() -> None:
     )
     control_config = CartesianControlConfig(
         qp_solver=args.qp_solver,
+        ik_mode=args.ik_mode,
         qp_position_cost=args.qp_position_cost,
         qp_orientation_cost=args.qp_orientation_cost,
+        qp_orientation_cost_min=args.qp_orientation_cost_min,
+        qp_position_gain=args.qp_position_gain,
+        qp_orientation_gain=args.qp_orientation_gain,
         qp_damping=args.qp_damping,
+        qp_damping_max=args.qp_damping_max,
         qp_smoothness_cost=args.qp_smoothness_cost,
         qp_posture_cost=args.qp_posture_cost,
+        singularity_threshold=args.singularity_threshold,
+        singularity_critical_threshold=args.singularity_critical_threshold,
+        singularity_characteristic_length_m=(
+            args.singularity_characteristic_length_m
+        ),
         joint_limit_margin_deg=args.joint_limit_margin_deg,
         qp_max_solve_time_ms=args.qp_max_solve_time_ms,
         position_scale=args.position_scale,
@@ -101,6 +112,8 @@ def main() -> None:
         wrist_speed_rad_s=wrist_speed,
         wrist_acceleration_rad_s2=wrist_acceleration,
         wrist_command_feedback_error_deg=wrist_rel_target * 0.9,
+        arm_command_lookahead_s=args.arm_command_lookahead_ms * 1e-3,
+        wrist_command_lookahead_s=args.wrist_command_lookahead_ms * 1e-3,
         gripper_command_feedback_error_deg=gripper_rel_target * 0.9,
         feedback_fault_max_consecutive=args.feedback_fault_max_consecutive,
         initial_q_rad=tuple(args.initial_q),
@@ -167,6 +180,12 @@ def main() -> None:
     preserve_torque_for_feedback_fault = False
     print("Support the arm before exit: torque is disabled on disconnect by default.")
     print("Release Grip fully after tracking starts; hold Grip only when ready to move.")
+    print(
+        "Gripper mapping (deg): "
+        f"Trigger 0 -> {control_config.gripper_open_deg:.1f}, "
+        f"Trigger 1 -> {control_config.gripper_closed_deg:.1f}; "
+        "fresh Tracking applies this mapping immediately."
+    )
     initial_target_rad = None
     if args.move_to_initial:
         initial_target_rad = arm_controller.home_q_rad.copy()
@@ -207,13 +226,16 @@ def main() -> None:
             dt_s = loop_started_s - previous_loop_s
             previous_loop_s = loop_started_s
             try:
+                feedback_started_s = time.perf_counter()
                 observation = robot.get_observation()
+                feedback_read_ms = (time.perf_counter() - feedback_started_s) * 1e3
             except Exception as exc:
                 logger.warning(
                     "robot feedback read failed; entering transient HOLD: %s",
                     exc,
                 )
                 observation = {}
+                feedback_read_ms = (time.perf_counter() - feedback_started_s) * 1e3
             sample = vr_controller.latest_sample()
             frame = (
                 sample
@@ -221,12 +243,23 @@ def main() -> None:
                 else vr_frame_from_raw_action(vr_controller.get_action())
             )
             action, status = arm_controller.update(frame, observation, dt_s)
+            send_started_s = time.perf_counter()
             if action is None:
                 sent_action = None
+                send_action_ms = 0.0
             elif status.feedback_valid:
                 sent_action = robot.send_action(action)
+                send_action_ms = (time.perf_counter() - send_started_s) * 1e3
             else:
                 sent_action = _send_feedback_hold_action(robot, action)
+                send_action_ms = (time.perf_counter() - send_started_s) * 1e3
+            status = replace(
+                status,
+                control_loop_hz=(None if dt_s <= 0.0 else 1.0 / dt_s),
+                feedback_read_ms=feedback_read_ms,
+                send_action_ms=send_action_ms,
+                cycle_work_ms=(time.monotonic() - loop_started_s) * 1e3,
+            )
 
             if status.feedback_abort_requested:
                 print(_status_line(status, sent_action), flush=True)

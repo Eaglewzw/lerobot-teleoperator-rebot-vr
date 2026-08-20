@@ -55,11 +55,56 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
 
     ik = parser.add_argument_group("IK and safety")
     ik.add_argument("--qp-solver", choices=("scipy", "osqp"), default="scipy")
+    ik.add_argument(
+        "--ik-mode",
+        choices=("pose", "position"),
+        default="pose",
+        help="pose tracks XYZ and orientation; position tracks XYZ only",
+    )
     ik.add_argument("--qp-position-cost", type=float, default=20.0)
     ik.add_argument("--qp-orientation-cost", type=float, default=2.0)
-    ik.add_argument("--qp-damping", type=float, default=1e-3)
+    ik.add_argument("--qp-orientation-cost-min", type=float, default=0.05)
+    ik.add_argument(
+        "--qp-position-gain",
+        type=float,
+        default=10.0,
+        help="Cartesian position error feedback gain in 1/s",
+    )
+    ik.add_argument(
+        "--qp-orientation-gain",
+        type=float,
+        default=8.0,
+        help="Cartesian orientation error feedback gain in 1/s",
+    )
+    ik.add_argument(
+        "--qp-damping",
+        "--qp-damping-min",
+        dest="qp_damping",
+        type=float,
+        default=1e-3,
+        help="minimum QP damping away from singularities",
+    )
+    ik.add_argument("--qp-damping-max", type=float, default=0.1)
     ik.add_argument("--qp-smoothness-cost", type=float, default=0.05)
     ik.add_argument("--qp-posture-cost", type=float, default=0.01)
+    ik.add_argument(
+        "--singularity-threshold",
+        type=float,
+        default=0.08,
+        help="dimensionless sigma_min where smooth adaptation starts",
+    )
+    ik.add_argument(
+        "--singularity-critical-threshold",
+        type=float,
+        default=0.02,
+        help="dimensionless sigma_min for maximum damping/orientation relaxation",
+    )
+    ik.add_argument(
+        "--singularity-characteristic-length-m",
+        type=float,
+        default=0.3,
+        help="length used to normalize linear Jacobian rows for SVD",
+    )
     ik.add_argument("--joint-limit-margin-deg", type=float, default=2.0)
     ik.add_argument("--qp-max-solve-time-ms", type=float, default=8.0)
     ik.add_argument("--urdf", type=Path)
@@ -68,6 +113,18 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
     ik.add_argument("--wrist-speed-rad-s", type=float, default=12.0, help="q4-q6 speed limit (rad/s)")
     ik.add_argument("--wrist-acceleration-rad-s2", type=float, default=60.0, help="q4-q6 acceleration limit (rad/s^2)")
     ik.add_argument("--wrist-relative-target-deg", type=float, default=20.0, help="q4-q6 follower relative target limit (deg)")
+    ik.add_argument(
+        "--arm-command-lookahead-ms",
+        type=float,
+        default=50.0,
+        help="q1-q3 POS_VEL position-command lookahead in milliseconds",
+    )
+    ik.add_argument(
+        "--wrist-command-lookahead-ms",
+        type=float,
+        default=25.0,
+        help="q4-q6 POS_VEL position-command lookahead in milliseconds",
+    )
     ik.add_argument("--feedback-fault-max-consecutive", type=int, default=5)
     ik.add_argument("--feedback-fault-settle-time", type=float, default=0.25)
     ik.add_argument("--gripper-max-speed-deg-s", type=float, default=1200.0)
@@ -119,10 +176,47 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError(f"the following parameters must be non-negative: {', '.join(invalid)}")
     if args.duration < 0.0:
         raise ValueError("duration must be non-negative")
-    qp_values = (args.qp_position_cost, args.qp_orientation_cost, args.qp_damping,
-                 args.qp_smoothness_cost, args.qp_posture_cost, args.joint_limit_margin_deg,
-                 args.qp_max_solve_time_ms)
-    if not np.all(np.isfinite(qp_values)) or args.qp_position_cost <= 0 or args.qp_orientation_cost < 0 or args.qp_damping < 0 or args.qp_smoothness_cost < 0 or args.qp_posture_cost < 0 or args.joint_limit_margin_deg < 0 or args.qp_max_solve_time_ms <= 0:
+    qp_values = (
+        args.qp_position_cost,
+        args.qp_position_gain,
+        args.qp_orientation_gain,
+        args.qp_orientation_cost,
+        args.qp_orientation_cost_min,
+        args.qp_damping,
+        args.qp_damping_max,
+        args.qp_smoothness_cost,
+        args.qp_posture_cost,
+        args.singularity_threshold,
+        args.singularity_critical_threshold,
+        args.singularity_characteristic_length_m,
+        args.joint_limit_margin_deg,
+        args.qp_max_solve_time_ms,
+        args.arm_command_lookahead_ms,
+        args.wrist_command_lookahead_ms,
+    )
+    if (
+        not np.all(np.isfinite(qp_values))
+        or args.qp_position_cost <= 0
+        or args.qp_position_gain <= 0
+        or args.qp_orientation_gain <= 0
+        or args.qp_orientation_cost < 0
+        or args.qp_orientation_cost_min < 0
+        or (
+            args.qp_orientation_cost > 0
+            and args.qp_orientation_cost_min > args.qp_orientation_cost
+        )
+        or args.qp_damping < 0
+        or args.qp_damping_max < args.qp_damping
+        or args.qp_smoothness_cost < 0
+        or args.qp_posture_cost < 0
+        or args.singularity_critical_threshold < 0
+        or args.singularity_threshold <= args.singularity_critical_threshold
+        or args.singularity_characteristic_length_m <= 0
+        or args.joint_limit_margin_deg < 0
+        or args.qp_max_solve_time_ms <= 0
+        or args.arm_command_lookahead_ms <= 0
+        or args.wrist_command_lookahead_ms <= 0
+    ):
         raise ValueError("invalid QP parameters")
     if args.feedback_fault_max_consecutive <= 0:
         raise ValueError("feedback-fault-max-consecutive must be positive")
@@ -149,11 +243,37 @@ def status_line(status: CartesianControlStatus, sent_action: dict[str, float] | 
     ik = "pending" if status.ik_success is None else (f"ok err={status.ik_error_m:.5f}m" if status.ik_success else f"hold {status.ik_reason}")
     sent_gripper_deg = status.gripper_command_deg if sent_action is None else float(sent_action.get(f"{GRIPPER_NAME}.pos", status.gripper_command_deg))
     orientation_error = "n/a" if status.orientation_error_deg is None else f"{status.orientation_error_deg:.3f}"
+    position_error = "n/a" if status.tcp_position_error_m is None else f"{status.tcp_position_error_m:.5f}"
+    sigma_min = "n/a" if status.sigma_min is None else f"{status.sigma_min:.5f}"
+    condition = "n/a" if status.condition_number is None else f"{status.condition_number:.1f}"
+    damping = "n/a" if status.current_damping is None else f"{status.current_damping:.6f}"
+    orientation_weight = "n/a" if status.current_orientation_weight is None else f"{status.current_orientation_weight:.4f}"
+    dq_norm = "n/a" if status.dq_norm_rad_s is None else f"{status.dq_norm_rad_s:.3f}"
+    solve_ms = "n/a" if status.qp_solve_time_ms is None else f"{status.qp_solve_time_ms:.3f}"
+    qp_age_ms = "n/a" if status.qp_result_age_ms is None else f"{status.qp_result_age_ms:.3f}"
+    sample_age_ms = "n/a" if status.tracking_sample_age_ms is None else f"{status.tracking_sample_age_ms:.3f}"
+    loop_hz = "n/a" if status.control_loop_hz is None else f"{status.control_loop_hz:.1f}"
+    feedback_ms = "n/a" if status.feedback_read_ms is None else f"{status.feedback_read_ms:.3f}"
+    send_ms = "n/a" if status.send_action_ms is None else f"{status.send_action_ms:.3f}"
+    work_ms = "n/a" if status.cycle_work_ms is None else f"{status.cycle_work_ms:.3f}"
+    tcp_actual = "n/a" if status.tcp_actual_position_m is None else np.array2string(status.tcp_actual_position_m, precision=4)
+    tcp_target = "n/a" if status.tcp_target_position_m is None else np.array2string(status.tcp_target_position_m, precision=4)
+    tcp_rotation_actual = "n/a" if status.tcp_actual_rotvec_rad is None else np.array2string(status.tcp_actual_rotvec_rad, precision=3)
+    tcp_rotation_target = "n/a" if status.tcp_target_rotvec_rad is None else np.array2string(status.tcp_target_rotvec_rad, precision=3)
+    qp_velocity = "n/a" if status.qp_joint_velocity_rad_s is None else np.array2string(status.qp_joint_velocity_rad_s, precision=3)
+    target_linear_velocity = "n/a" if status.target_linear_velocity_m_s is None else np.array2string(status.target_linear_velocity_m_s, precision=3)
+    target_angular_velocity = "n/a" if status.target_angular_velocity_rad_s is None else np.array2string(status.target_angular_velocity_rad_s, precision=3)
     feedback = "ok" if status.feedback_valid else f"HOLD {status.feedback_fault_count} reason={status.feedback_fault_reason}"
+    trigger_control = "active" if status.gripper_trigger_active else "hold"
     return (f"state={status.state.value:<7} tracking={status.tracking} ik={ik} feedback={feedback} jobs={status.submitted}/{status.solved}/{status.rejected} A={status.primary_button} home={status.home_requested} B={status.secondary_button} zero={status.zero_requested}\n"
-            f"  trigger={status.trigger:.3f} gripper_deg(actual/target/shaped/sent)={status.gripper_actual_deg:.1f}/{status.gripper_target_deg:.1f}/{status.gripper_command_deg:.1f}/{sent_gripper_deg:.1f}\n"
+            f"  trigger={status.trigger:.3f} trigger_control={trigger_control} gripper_deg(actual/target/shaped/sent)={status.gripper_actual_deg:.1f}/{status.gripper_target_deg:.1f}/{status.gripper_command_deg:.1f}/{sent_gripper_deg:.1f}\n"
             f"  wrist_deg[q4/q5/q6] actual/target/command={np.array2string(status.actual_deg[3:6], precision=1)}/{np.array2string(status.target_deg[3:6], precision=1)}/{np.array2string(status.command_deg[3:6], precision=1)}\n"
-            f"  orientation_error_deg={orientation_error} wrist_clip_deg={status.wrist_clip_deg:.3f}\n"
+            f"  position_error_m={position_error} orientation_error_deg={orientation_error}\n"
+            f"  qp_mode={status.ik_mode} sigma_min={sigma_min} condition={condition} damping={damping} orientation_weight={orientation_weight} dq_norm_rad_s={dq_norm} solve_ms={solve_ms} result_age_ms={qp_age_ms}\n"
+            f"  timing_hz={loop_hz} sample_age_ms={sample_age_ms} feedback_ms={feedback_ms} send_ms={send_ms} work_ms={work_ms}\n"
+            f"  tcp_position_m actual/target={tcp_actual}/{tcp_target}\n"
+            f"  target_twist linear_m_s/angular_rad_s={target_linear_velocity}/{target_angular_velocity}\n"
+            f"  tcp_rotvec_rad actual/target={tcp_rotation_actual}/{tcp_rotation_target} qp_dq_rad_s={qp_velocity}\n"
             f"  actual_deg={np.array2string(status.actual_deg, precision=1, suppress_small=True)}\n"
             f"  target_deg={np.array2string(status.target_deg, precision=1, suppress_small=True)}\n"
             f"  command_deg={np.array2string(status.command_deg, precision=1, suppress_small=True)}")

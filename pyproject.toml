@@ -25,6 +25,7 @@ test = ["pytest>=8"]
 qp = ["osqp>=1.0,<2"]
 
 [project.scripts]
+rebot-gripper-test = "lerobot_teleoperator_rebot_vr.gripper_test:main"
 rebot-vr-print = "lerobot_teleoperator_rebot_vr.print_vr_data:main"
 rebot-vr-teleoperate = "lerobot_teleoperator_rebot_vr.teleoperate_real:main"
 

@@ -47,7 +47,7 @@ def test_qp_uses_all_axes_and_respects_limits(model):
     p, r = model.forward_kinematics(q)
     target = r @ np.eye(3)
     solver = FullBodyQPIKSolver(model, max_solve_time_ms=20.0)
-    q_next, ok, _, _, _ = solver.solve(
+    result = solver.solve(
         target_position=p + np.array([0.002, 0.0, 0.0]),
         target_rotation=target,
         q_actual=q,
@@ -57,11 +57,11 @@ def test_qp_uses_all_axes_and_respects_limits(model):
         max_joint_speed=np.full(6, 0.5),
         max_joint_acceleration=np.full(6, 2.0),
     )
-    assert ok
-    assert q_next.shape == (6,)
-    assert np.all(np.abs(q_next - q) <= 0.005 + 1e-8)
-    assert np.all(q_next >= model.lower_position_limit - 1e-8)
-    assert np.all(q_next <= model.upper_position_limit + 1e-8)
+    assert result.success
+    assert result.q_target_rad.shape == (6,)
+    assert np.all(np.abs(result.q_target_rad - q) <= 0.005 + 1e-8)
+    assert np.all(result.q_target_rad >= model.lower_position_limit - 1e-8)
+    assert np.all(result.q_target_rad <= model.upper_position_limit + 1e-8)
 
 
 def test_qp_acceleration_constraint_preserves_previous_velocity() -> None:
@@ -85,7 +85,7 @@ def test_qp_acceleration_constraint_preserves_previous_velocity() -> None:
     speed = np.array([5.5] * 3 + [12.0] * 3)
     acceleration = np.array([20.0] * 3 + [60.0] * 3)
     dt = 0.01
-    q_next, ok, _, _, _ = solver.solve(
+    result = solver.solve(
         target_position=np.ones(3),
         target_rotation=np.eye(3),
         q_actual=q,
@@ -95,22 +95,216 @@ def test_qp_acceleration_constraint_preserves_previous_velocity() -> None:
         max_joint_speed=speed,
         max_joint_acceleration=acceleration,
     )
-    assert ok
+    assert result.success
     # With dq_prev already at the speed limit, the next step must be allowed
     # to remain near that speed. The old implementation limited it to roughly
     # 2*acceleration*dt instead (0.4 and 1.2 rad/s respectively).
-    assert np.all(q_next > 0.5 * speed * dt)
-    assert np.all(q_next <= speed * dt + 1e-8)
+    assert np.all(result.q_target_rad > 0.5 * speed * dt)
+    assert np.all(result.q_target_rad <= speed * dt + 1e-8)
 
 
-def test_qp_failure_does_not_return_partial_wrist(model):
+def test_adaptive_qp_weights_change_smoothly_and_monotonically() -> None:
+    class LimitsOnlyKinematics:
+        lower_position_limit = np.full(6, -10.0)
+        upper_position_limit = np.full(6, 10.0)
+
+    solver = FullBodyQPIKSolver(
+        LimitsOnlyKinematics(),
+        singularity_critical_threshold=0.02,
+        singularity_threshold=0.08,
+        damping_min=1e-3,
+        damping_max=0.1,
+        orientation_cost=2.0,
+        orientation_cost_min=0.05,
+    )
+    sigma = np.linspace(0.0, 0.1, 1001)
+    weights = np.asarray([solver._adaptive_weights(value) for value in sigma])
+
+    assert weights[0] == pytest.approx([0.1, 0.05])
+    assert weights[-1] == pytest.approx([1e-3, 2.0])
+    assert np.all(np.diff(weights[:, 0]) <= 1e-12)
+    assert np.all(np.diff(weights[:, 1]) >= -1e-12)
+    epsilon = 1e-8
+    below_critical = solver._adaptive_weights(0.02 - epsilon)
+    above_critical = solver._adaptive_weights(0.02 + epsilon)
+    below_normal = solver._adaptive_weights(0.08 - epsilon)
+    above_normal = solver._adaptive_weights(0.08 + epsilon)
+    assert above_critical == pytest.approx(below_critical, abs=1e-10)
+    assert above_normal == pytest.approx(below_normal, abs=1e-10)
+
+
+def test_position_mode_ignores_orientation_but_keeps_diagnostics() -> None:
+    class LinearKinematics:
+        lower_position_limit = np.full(6, -10.0)
+        upper_position_limit = np.full(6, 10.0)
+
+        @staticmethod
+        def tcp_pose_error(q, target_position, target_rotation):
+            del target_rotation
+            q = np.asarray(q, dtype=float)
+            return np.concatenate(
+                (np.asarray(target_position, dtype=float) - q[:3], np.ones(3))
+            )
+
+        @staticmethod
+        def tcp_jacobian(q):
+            del q
+            return np.eye(6)
+
+    common = dict(
+        position_cost=20.0,
+        orientation_cost=2.0,
+        damping_min=1e-6,
+        damping_max=1e-6,
+        smoothness_cost=0.0,
+        posture_cost=0.0,
+        max_solve_time_ms=20.0,
+    )
+    q = np.zeros(6)
+    arguments = dict(
+        target_position=np.zeros(3),
+        target_rotation=np.eye(3),
+        q_actual=q,
+        dq_previous=np.zeros(6),
+        dt=0.01,
+        q_nominal=q,
+        max_joint_speed=np.full(6, 10.0),
+        max_joint_acceleration=np.full(6, 1000.0),
+    )
+    pose_result = FullBodyQPIKSolver(
+        LinearKinematics(), ik_mode="pose", **common
+    ).solve(**arguments)
+    position_result = FullBodyQPIKSolver(
+        LinearKinematics(), ik_mode="position", **common
+    ).solve(**arguments)
+
+    assert pose_result.success
+    assert position_result.success
+    assert np.linalg.norm(pose_result.q_target_rad[3:]) > 1e-4
+    assert position_result.q_target_rad == pytest.approx(q, abs=1e-9)
+    assert position_result.orientation_weight == pytest.approx(0.0)
+    assert position_result.orientation_error_rad == pytest.approx(np.sqrt(3.0))
+    assert np.isfinite(position_result.sigma_min)
+    assert np.isfinite(position_result.condition_number)
+
+
+def test_qp_result_exposes_singularity_and_motion_diagnostics(model) -> None:
+    q = np.array([0.0, -0.8, -0.8, 0.0, 0.0, 0.0])
+    position, rotation = model.forward_kinematics(q)
+    result = FullBodyQPIKSolver(model, max_solve_time_ms=20.0).solve(
+        target_position=position,
+        target_rotation=rotation,
+        q_actual=q,
+        dq_previous=np.zeros(6),
+        dt=0.02,
+        q_nominal=q,
+        max_joint_speed=np.ones(6),
+        max_joint_acceleration=np.full(6, 10.0),
+    )
+
+    assert result.success
+    assert result.sigma_min == pytest.approx(0.2764982456, rel=1e-5)
+    assert result.condition_number == pytest.approx(10.1621218, rel=1e-5)
+    assert result.damping == pytest.approx(1e-3)
+    assert result.orientation_weight == pytest.approx(2.0)
+    assert result.joint_velocity_rad_s == pytest.approx(np.zeros(6), abs=1e-8)
+
+
+def test_position_qp_combines_target_velocity_feedforward_with_error_feedback() -> None:
+    class LinearKinematics:
+        lower_position_limit = np.full(6, -10.0)
+        upper_position_limit = np.full(6, 10.0)
+
+        @staticmethod
+        def tcp_pose_error(q, target_position, target_rotation):
+            del target_rotation
+            q = np.asarray(q, dtype=float)
+            return np.concatenate(
+                (np.asarray(target_position, dtype=float) - q[:3], np.zeros(3))
+            )
+
+        @staticmethod
+        def tcp_jacobian(q):
+            del q
+            return np.eye(6)
+
+    q = np.zeros(6)
+    feedforward = np.array([0.2, -0.1, 0.05])
+    result = FullBodyQPIKSolver(
+        LinearKinematics(),
+        ik_mode="position",
+        position_cost=100.0,
+        position_gain=10.0,
+        damping_min=1e-9,
+        damping_max=1e-9,
+        smoothness_cost=0.0,
+        posture_cost=0.0,
+        max_solve_time_ms=20.0,
+    ).solve(
+        target_position=np.array([0.01, 0.0, 0.0]),
+        target_rotation=np.eye(3),
+        target_linear_velocity_m_s=feedforward,
+        q_actual=q,
+        dq_previous=np.zeros(6),
+        dt=0.02,
+        q_nominal=q,
+        max_joint_speed=np.full(6, 10.0),
+        max_joint_acceleration=np.full(6, 1000.0),
+    )
+
+    assert result.success
+    assert result.joint_velocity_rad_s[:3] == pytest.approx(
+        feedforward + np.array([0.1, 0.0, 0.0]), abs=1e-7
+    )
+    assert result.q_target_rad[:3] == pytest.approx(
+        0.02 * (feedforward + np.array([0.1, 0.0, 0.0])), abs=1e-8
+    )
+
+
+def test_singular_task_jacobian_activates_maximum_protection() -> None:
+    class SingularKinematics:
+        lower_position_limit = np.full(6, -10.0)
+        upper_position_limit = np.full(6, 10.0)
+
+        @staticmethod
+        def tcp_pose_error(q, target_position, target_rotation):
+            del q, target_position, target_rotation
+            return np.zeros(6)
+
+        @staticmethod
+        def tcp_jacobian(q):
+            del q
+            return np.diag([0.3, 0.3, 0.3, 1.0, 1.0, 0.01])
+
+    q = np.zeros(6)
+    result = FullBodyQPIKSolver(
+        SingularKinematics(), max_solve_time_ms=20.0
+    ).solve(
+        target_position=np.zeros(3),
+        target_rotation=np.eye(3),
+        q_actual=q,
+        dq_previous=np.zeros(6),
+        dt=0.02,
+        q_nominal=q,
+        max_joint_speed=np.ones(6),
+        max_joint_acceleration=np.ones(6),
+    )
+
+    assert result.success
+    assert result.sigma_min == pytest.approx(0.01)
+    assert result.condition_number == pytest.approx(100.0)
+    assert result.damping == pytest.approx(0.1)
+    assert result.orientation_weight == pytest.approx(0.05)
+
+
+def test_qp_failure_does_not_return_partial_joint_target(model):
     q = np.zeros(6)
     p, r = model.forward_kinematics(q)
     solver = FullBodyQPIKSolver(model, max_solve_time_ms=0.001)
     result = solver.solve(target_position=p, target_rotation=r, q_actual=q,
                           dq_previous=np.zeros(6), dt=0.01, q_nominal=q,
                           max_joint_speed=np.ones(6), max_joint_acceleration=np.ones(6))
-    assert result[1] is False
+    assert result.success is False
 
 
 def test_qp_target_does_not_integrate_feedback_delay(model):

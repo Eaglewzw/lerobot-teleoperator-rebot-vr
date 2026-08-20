@@ -91,11 +91,23 @@ class RebotVRTeleop(Teleoperator):
             self._kinematics = B601Kinematics()
             control_config = CartesianControlConfig(
                 qp_solver=self.config.qp_solver,
+                ik_mode=self.config.ik_mode,
                 qp_position_cost=self.config.qp_position_cost,
                 qp_orientation_cost=self.config.qp_orientation_cost,
+                qp_orientation_cost_min=self.config.qp_orientation_cost_min,
+                qp_position_gain=self.config.qp_position_gain,
+                qp_orientation_gain=self.config.qp_orientation_gain,
                 qp_damping=self.config.qp_damping,
+                qp_damping_max=self.config.qp_damping_max,
                 qp_smoothness_cost=self.config.qp_smoothness_cost,
                 qp_posture_cost=self.config.qp_posture_cost,
+                singularity_threshold=self.config.singularity_threshold,
+                singularity_critical_threshold=(
+                    self.config.singularity_critical_threshold
+                ),
+                singularity_characteristic_length_m=(
+                    self.config.singularity_characteristic_length_m
+                ),
                 joint_limit_margin_deg=self.config.joint_limit_margin_deg,
                 qp_max_solve_time_ms=self.config.qp_max_solve_time_ms,
                 position_scale=self.config.position_scale,
@@ -109,6 +121,8 @@ class RebotVRTeleop(Teleoperator):
                 stale_timeout_s=self.config.stale_timeout,
                 max_joint_speed_rad_s=self.config.max_joint_speed_rad_s,
                 max_joint_acceleration_rad_s2=self.config.max_joint_acceleration_rad_s2,
+                arm_command_lookahead_s=self.config.arm_command_lookahead_s,
+                wrist_command_lookahead_s=self.config.wrist_command_lookahead_s,
                 feedback_fault_max_consecutive=(
                     self.config.feedback_fault_max_consecutive
                 ),
