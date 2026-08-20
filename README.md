@@ -5,7 +5,7 @@
 [![License](https://img.shields.io/badge/License-Apache--2.0-3377FF)](LICENSE)
 
 面向 [LeRobot](https://github.com/huggingface/lerobot) 0.6.x 与 Seeed Studio reBot B601-DM（达妙电机）的 PICO 4 手柄**笛卡尔遥操作**插件。
-- **6-DoF 笛卡尔映射** —— 手柄位移 → 腕部中心位置 IK（q1–q3），手柄旋转 → 闭式姿态解（q4–q6），同一 VR 帧原子更新六轴目标
+- **6-DoF 笛卡尔映射** —— 默认使用以 `gripper_end` 为控制点的全六轴差分 QP IK；六个关节共同跟踪 TCP 位置和姿态，同一 VR 帧原子更新六轴目标
 - **离合式开关** —— Grip 按住激活、松开立即冻结；激活前必须先完全松开一次，防止手柄积累运动瞬间注入
 - **三线程 latest-only 架构** —— TCP 接收 / 异步 IK / 主控制循环互不阻塞，永远只消费最新样本与最新 IK 结果
 - **分层安全防护** —— 软限位、跳支保护、速度/加速度整形、follower 相对目标裁剪；反馈异常进入 HOLD 冻结，连续故障受控退出并保留扭矩
@@ -83,12 +83,12 @@ rebot-vr-teleoperate --robot-port /dev/ttyACM0 --backend xrobotoolkit_v1
 
 | 参数 | 默认 | 最大值 | 说明 |
 |---|---|---|---|
-| `--position-scale` | `1.0` | — | 手柄位移 → 腕部中心位移倍率 |
+| `--position-scale` | `1.0` | — | 手柄位移 → `gripper_end` TCP 位移倍率 |
 | `--orientation-scale` | `1.0` | — | 手柄旋转 → 末端旋转倍率 |
-| `--max-joint-speed-rad-s` | `5.5` | **5.5** | q1–q3 速度上限（rad/s） |
-| `--max-joint-acceleration-rad-s2` | `20` | **20** | q1–q3 加速度上限（rad/s²） |
-| `--wrist-speed-rad-s` | `12` | **12** | q4–q6 速度上限（rad/s） |
-| `--wrist-acceleration-rad-s2` | `60` | **60** | q4–q6 加速度上限（rad/s²） |
+| `--max-joint-speed-rad-s` | `5.5` | **5.5** | q1–q6 前三轴速度约束（rad/s） |
+| `--max-joint-acceleration-rad-s2` | `20` | **20** | q1–q6 前三轴加速度约束（rad/s²） |
+| `--wrist-speed-rad-s` | `12` | **12** | q1–q6 后三轴速度约束（rad/s） |
+| `--wrist-acceleration-rad-s2` | `60` | **60** | q1–q6 后三轴加速度约束（rad/s²） |
 | `--max-relative-target-deg` | `20` | **20** | 臂部 follower 相对目标保护（deg） |
 | `--wrist-relative-target-deg` | `20` | **20** | q4–q6 follower 相对目标保护（deg） |
 | `--gripper-relative-target-deg` | `20` | **20** | 夹爪 follower 相对目标保护（deg） |
@@ -96,6 +96,14 @@ rebot-vr-teleoperate --robot-port /dev/ttyACM0 --backend xrobotoolkit_v1
 | `--gripper-max-acceleration-deg-s2` | `5000` | 推荐 ≤50000 | 夹爪加速度上限（°/s²） |
 | `--gripper-torque-ratio` | `0.2` | `1.0` | 夹爪最大夹持力比例 |
 | `--fps` | `60` |  ≤120 | 主循环频率 |
+| `--qp-solver` | `scipy` | `scipy/osqp` | QP 后端；OSQP 需安装 `.[qp]` |
+| `--qp-position-cost` | `20` | — | TCP 位置任务权重（高于姿态） |
+| `--qp-orientation-cost` | `2` | — | TCP 姿态任务权重 |
+| `--qp-damping` | `1e-3` | — | 奇异点阻尼 |
+| `--qp-smoothness-cost` | `0.05` | — | 速度连续性正则 |
+| `--qp-posture-cost` | `0.01` | — | 回归 nominal 姿态正则 |
+| `--joint-limit-margin-deg` | `2` | — | QP 关节限位内缩余量 |
+| `--qp-max-solve-time-ms` | `8` | — | 单次 QP 时间预算 |
 
 > [!IMPORTANT]
 > 上表最大值为**实机验证的安全上限**；电机硬件空载上限见[最大速度与加速度](#最大速度与加速度)。CLI 不强制校验最大值，超出后电机物理上无法达到。
@@ -138,14 +146,19 @@ rebot-vr-teleoperate \
 ```text
 PICO 手柄位姿（XRoboToolkit V1 TCP / Isaac CloudXR）
   → XR → B601 坐标转换
-  → Grip 按下时建立腕部中心位置 + 夹爪姿态参考（离合相对映射）
-  → q1–q3 异步位置 IK（腕部中心）+ q4–q6 绝对闭式姿态解
+  → Grip 按下时建立 `gripper_end` TCP 位置/旋转参考，并原子锁存实际六轴姿态
+  → 全六轴差分 QP IK（位置优先、姿态软约束）
   → 同一 VR 帧原子更新六轴目标
   → 限位、跳支保护、速度/加速度整形
-  → LeRobot RebotB601Follower.send_action()
+  → LeRobot RebotB601Follower.send_action()（机械臂 POS_VEL，夹爪默认 FORCE_POS）
 ```
 
-**线程模型**：V1 TCP 接收线程原子替换最新样本；IK worker 以 latest-only 方式求解（新请求到达时旧请求被丢弃）；主控制线程独占机器人反馈、状态机与唯一的 `send_action()` 调用。
+实机入口将六个机械臂关节配置为达妙 `pos_vel` 模式。控制器发送经过 QP 和速度/加速度
+整形后的关节位置目标，follower 同时发送分轴 `pos_vel_velocity` 速度上限；夹爪默认
+仍使用 `force_pos`。当前不使用零扭矩前馈的 MIT 模式，因为负载下的稳态位置误差会
+妨碍启动姿态和 TCP 跟踪。
+
+**线程模型**：V1 TCP 接收线程原子替换最新样本；全六轴 QP worker 以 latest-only 方式求解（请求携带 generation/sequence/sample_id、实际反馈、上一速度和 dt）；主控制线程独占机器人反馈、状态机与唯一的 `send_action()` 调用。Grip 捕获首帧不求解，QP 结果作为实际反馈上的绝对下一步目标，禁止对旧目标重复积分；QP 失败时保持上一完整六轴目标。
 
 **安全状态机**：
 
@@ -183,7 +196,7 @@ PICO 手柄位姿（XRoboToolkit V1 TCP / Isaac CloudXR）
 
 - [控制设计](docs/CONTROL_DESIGN.md) —— 线程模型、坐标映射、安全状态与反馈故障处理
 - [逆解设计](docs/INVERSE_KINEMATICS_DESIGN.md) —— 从 VR 样本到六轴命令的完整推导
-- [腕部求解验证报告](docs/vr_wrist_test/TEST_REPORT.md) —— 闭环仿真跳变统计与 q4–q6 解算对比
+- [QP 轨迹验证报告](docs/vr_wrist_test/TEST_REPORT.md) —— 全六轴 TCP QP 离线指标
 
 ## 许可证
 

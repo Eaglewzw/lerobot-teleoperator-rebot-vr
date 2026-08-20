@@ -12,7 +12,7 @@ from .cartesian_controller import (
     ARM_JOINT_NAMES,
     GRIPPER_NAME,
     CartesianControlConfig,
-    SplitArmWristController,
+    FullBodyQPIKController,
     vr_frame_from_raw_action,
 )
 from .config_rebot_vr import DEFAULT_BASE_T_ANCHOR, RebotVRConfig
@@ -79,6 +79,14 @@ def main() -> None:
         else args.max_relative_target_deg
     )
     control_config = CartesianControlConfig(
+        qp_solver=args.qp_solver,
+        qp_position_cost=args.qp_position_cost,
+        qp_orientation_cost=args.qp_orientation_cost,
+        qp_damping=args.qp_damping,
+        qp_smoothness_cost=args.qp_smoothness_cost,
+        qp_posture_cost=args.qp_posture_cost,
+        joint_limit_margin_deg=args.joint_limit_margin_deg,
+        qp_max_solve_time_ms=args.qp_max_solve_time_ms,
         position_scale=args.position_scale,
         orientation_scale=args.orientation_scale,
         position_filter_hz=args.position_filter_hz,
@@ -88,11 +96,6 @@ def main() -> None:
         grip_press_threshold=args.grip_press,
         grip_release_threshold=args.grip_release,
         stale_timeout_s=args.stale_timeout,
-        ik_rate_hz=args.ik_rate,
-        ik_max_iterations=args.ik_max_iterations,
-        ik_tolerance_m=args.ik_tolerance_m,
-        ik_damping=args.ik_damping,
-        max_solution_jump_rad=args.max_solution_jump_rad,
         max_joint_speed_rad_s=args.max_joint_speed_rad_s,
         max_joint_acceleration_rad_s2=args.max_joint_acceleration_rad_s2,
         wrist_speed_rad_s=wrist_speed,
@@ -123,6 +126,9 @@ def main() -> None:
         id=args.robot_id,
         can_adapter=args.can_adapter,
         dm_serial_baud=args.dm_serial_baud,
+        # Keep the arm in POS_VEL while the full-body QP parameters are tuned.
+        # MIT without model-based gravity feedforward leaves load-dependent
+        # steady-state errors that prevent the initial pose from converging.
         control_mode="pos_vel",
         gripper_control_mode=args.gripper_control_mode,
         gripper_torque_ratio=args.gripper_torque_ratio,
@@ -140,7 +146,7 @@ def main() -> None:
     )
     robot = RebotB601Follower(robot_config)
     vr_controller = make_vr_controller(vr_config)
-    arm_controller = SplitArmWristController(
+    arm_controller = FullBodyQPIKController(
         kinematics,
         xr_to_base_rotation=np.asarray(DEFAULT_BASE_T_ANCHOR, dtype=np.float64)[:3, :3],
         config=control_config,

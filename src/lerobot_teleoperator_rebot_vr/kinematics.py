@@ -1,17 +1,121 @@
-"""B601-DM forward and position-only inverse kinematics."""
+"""B601-DM forward kinematics and full-body differential IK."""
 
 from __future__ import annotations
 
 import threading
+import time
 from contextlib import ExitStack
 from importlib.resources import as_file, files
 from pathlib import Path
 
 import numpy as np
+from scipy.spatial.transform import Rotation
+from scipy.optimize import minimize
 
 
 NUM_ARM_JOINTS = 6
-POSITION_JOINT_INDICES = np.asarray((0, 1, 2), dtype=int)
+
+
+class FullBodyQPIKSolver:
+    """Convex differential TCP IK with box constraints on joint velocity."""
+
+    def __init__(self, kinematics: "B601Kinematics", *, solver: str = "scipy", position_cost: float = 20.0,
+                 orientation_cost: float = 2.0, damping: float = 1e-3,
+                 smoothness_cost: float = 0.05, posture_cost: float = 0.01,
+                 joint_limit_margin_rad: float = 0.03, max_solve_time_ms: float = 8.0) -> None:
+        self.kinematics = kinematics
+        self.solver = str(solver).lower()
+        if self.solver not in ("scipy", "osqp"):
+            raise ValueError("qp solver must be scipy or osqp")
+        values = (position_cost, orientation_cost, damping, smoothness_cost, posture_cost,
+                  joint_limit_margin_rad, max_solve_time_ms)
+        if not np.all(np.isfinite(values)) or position_cost <= 0 or orientation_cost < 0 or damping < 0 or smoothness_cost < 0 or posture_cost < 0 or joint_limit_margin_rad < 0 or max_solve_time_ms <= 0:
+            raise ValueError("invalid QP parameters")
+        self.position_cost = float(position_cost)
+        self.orientation_cost = float(orientation_cost)
+        self.damping = float(damping)
+        self.smoothness_cost = float(smoothness_cost)
+        self.posture_cost = float(posture_cost)
+        self.joint_limit_margin_rad = float(joint_limit_margin_rad)
+        self.max_solve_time_ms = float(max_solve_time_ms)
+
+    def solve(self, *, target_position: object, target_rotation: object, q_actual: object,
+              dq_previous: object, dt: float, q_nominal: object,
+              max_joint_speed: object, max_joint_acceleration: object) -> tuple[np.ndarray, bool, float, float, str]:
+        started = time.monotonic_ns()
+        q = np.asarray(q_actual, dtype=np.float64)
+        dq_prev = np.asarray(dq_previous, dtype=np.float64)
+        q_nom = np.asarray(q_nominal, dtype=np.float64)
+        speed = np.asarray(max_joint_speed, dtype=np.float64)
+        accel = np.asarray(max_joint_acceleration, dtype=np.float64)
+        if any(v.shape != (6,) for v in (q, dq_prev, q_nom, speed, accel)) or not all(np.all(np.isfinite(v)) for v in (q, dq_prev, q_nom, speed, accel)):
+            return np.zeros(6), False, float("inf"), 0.0, "invalid_input"
+        dt = float(dt)
+        if not np.isfinite(dt) or dt <= 0.0:
+            return np.zeros(6), False, float("inf"), 0.0, "invalid_dt"
+        lower = np.asarray(self.kinematics.lower_position_limit, dtype=np.float64)
+        upper = np.asarray(self.kinematics.upper_position_limit, dtype=np.float64)
+        if np.any(q < lower) or np.any(q > upper):
+            return np.zeros(6), False, float("inf"), (time.monotonic_ns()-started)*1e-6, "feedback_outside_limits"
+        # Keep zero feasible while the feedback is in the inward margin; only
+        # enforce the margin when moving toward an already-safe limit.
+        safe_lo = np.where(q <= lower + self.joint_limit_margin_rad, q, lower + self.joint_limit_margin_rad)
+        safe_hi = np.where(q >= upper - self.joint_limit_margin_rad, q, upper - self.joint_limit_margin_rad)
+        # dq_prev is a velocity (rad/s), not a per-step displacement.  The
+        # acceleration constraint must therefore limit the change from the
+        # previous velocity: |dq - dq_prev| <= acceleration * dt.  Only bound
+        # an out-of-range/stale previous velocity to the configured speed
+        # envelope; clipping it to acceleration*dt would silently reduce the
+        # reachable speed to roughly 2*acceleration*dt.
+        dq_constraint_prev = np.clip(dq_prev, -speed, speed)
+        lo = np.maximum.reduce(
+            (-speed, (safe_lo - q) / dt, dq_constraint_prev - accel * dt)
+        )
+        hi = np.minimum.reduce(
+            (speed, (safe_hi - q) / dt, dq_constraint_prev + accel * dt)
+        )
+        if np.any(lo > hi + 1e-10):
+            return np.zeros(6), False, float("inf"), (time.monotonic_ns()-started)*1e-6, "infeasible_constraints"
+        try:
+            error = self.kinematics.tcp_pose_error(q, target_position, target_rotation)
+            jac = self.kinematics.tcp_jacobian(q)
+            wp = np.sqrt(self.position_cost)
+            wo = np.sqrt(self.orientation_cost)
+            A = np.vstack((wp * jac[:3], wo * jac[3:], np.sqrt(self.damping) * np.eye(6),
+                           np.sqrt(self.smoothness_cost) * np.eye(6), np.sqrt(self.posture_cost) * dt * np.eye(6)))
+            b = np.concatenate((wp * error[:3] / dt, wo * error[3:] / dt,
+                                np.zeros(6), np.sqrt(self.smoothness_cost) * dq_constraint_prev,
+                                np.sqrt(self.posture_cost) * (q_nom - q)))
+            H = A.T @ A + 1e-12 * np.eye(6)
+            g = -(A.T @ b)
+            x0 = np.clip(dq_prev, lo, hi)
+            if self.solver == "osqp":
+                import osqp  # optional, explicit backend only
+                from scipy import sparse
+                problem = osqp.OSQP()
+                problem.setup(P=sparse.csc_matrix(H), q=g, A=sparse.eye(6), l=lo, u=hi,
+                              verbose=False, time_limit=self.max_solve_time_ms / 1000.0)
+                result = problem.solve()
+                dq = np.asarray(result.x, dtype=np.float64) if result.x is not None else x0
+                ok = result.info.status.lower().startswith("solved")
+            else:
+                deadline = started + int(self.max_solve_time_ms * 1e6)
+                def fun(x): return 0.5 * float(x @ H @ x) + float(g @ x)
+                def jac_fun(x): return H @ x + g
+                result = minimize(fun, x0, jac=jac_fun, bounds=list(zip(lo, hi)), method="L-BFGS-B",
+                                  options={"maxiter": 40, "ftol": 1e-10, "gtol": 1e-7, "maxls": 10})
+                dq = np.asarray(result.x if result.x is not None else x0, dtype=np.float64)
+                ok = bool(result.success) or np.linalg.norm(jac_fun(dq), np.inf) < 1e-4
+                if time.monotonic_ns() > deadline:
+                    ok = False
+                    return np.zeros(6), False, float(np.linalg.norm(error[:3])), (time.monotonic_ns()-started)*1e-6, "solve_timeout"
+            if dq.shape != (6,) or not np.all(np.isfinite(dq)) or np.any(dq < lo - 1e-7) or np.any(dq > hi + 1e-7):
+                return np.zeros(6), False, float(np.linalg.norm(error[:3])), (time.monotonic_ns()-started)*1e-6, "invalid_solution"
+            q_next = q + dq * dt
+            residual = self.kinematics.tcp_pose_error(q_next, target_position, target_rotation)
+            return q_next, ok, float(np.linalg.norm(residual[:3])), (time.monotonic_ns()-started)*1e-6, ("" if ok else "qp_failed")
+        except Exception as exc:
+            return np.zeros(6), False, float("inf"), (time.monotonic_ns()-started)*1e-6, f"solver_exception:{type(exc).__name__}"
 
 
 def default_urdf_path() -> Path:
@@ -54,29 +158,6 @@ class B601Kinematics:
         if self.frame_id >= self.model.nframes:
             raise ValueError(f"end-effector frame not found: {end_effector_frame}")
         self.end_effector_frame = end_effector_frame
-        self.wrist_joint_id = self.model.getJointId("joint4")
-        if self.wrist_joint_id <= 0 or self.wrist_joint_id >= self.model.njoints:
-            raise ValueError("joint4 is required for closed-form wrist orientation")
-
-        zero_q = np.zeros(NUM_ARM_JOINTS, dtype=np.float64)
-        self._wrist_frame_constant = (
-            self.wrist_base_rotation(zero_q[:3]).T
-            @ self.forward_kinematics(zero_q)[1]
-        )
-        self._wrist_frame_constant.flags.writeable = False
-        probe_q123 = np.array([0.3, -0.9, -0.7], dtype=np.float64)
-        probe_constant = (
-            self.wrist_base_rotation(probe_q123).T
-            @ self.forward_kinematics(
-                np.concatenate((probe_q123, np.zeros(3, dtype=np.float64)))
-            )[1]
-        )
-        if not np.allclose(
-            probe_constant, self._wrist_frame_constant, atol=1e-6, rtol=0.0
-        ):
-            raise ValueError(
-                "B601 wrist orientation chain is not independent of q1-q3"
-            )
 
     def close(self) -> None:
         self._resource_stack.close()
@@ -94,182 +175,35 @@ class B601Kinematics:
     def upper_position_limit(self) -> np.ndarray:
         return np.asarray(self.model.upperPositionLimit[:NUM_ARM_JOINTS], dtype=float).copy()
 
-    @property
-    def wrist_frame_constant(self) -> np.ndarray:
-        return self._wrist_frame_constant.copy()
-
     def forward_kinematics(self, q_rad: object) -> tuple[np.ndarray, np.ndarray]:
-        """Return the gripper_end pose used by the wrist orientation solver."""
+        """Return the complete gripper_end TCP pose."""
         q = self._joint_vector(q_rad)
         data = self._thread_data()
         self.pin.framesForwardKinematics(self.model, data, q)
         pose = data.oMf[self.frame_id]
         return np.asarray(pose.translation, dtype=float).copy(), np.asarray(pose.rotation, dtype=float).copy()
 
-    def wrist_center_position(self, q_rad: object) -> np.ndarray:
-        """Return the joint4 origin controlled by the q1-q3 position IK.
-
-        The joint4 origin is the end of the three-axis arm and is independent of
-        q4-q6.  It is intentionally distinct from the gripper_end TCP.
-        """
+    def tcp_jacobian(self, q_rad: object) -> np.ndarray:
+        """Return gripper_end Jacobian as [linear_world; angular_world]."""
         q = self._joint_vector(q_rad)
         data = self._thread_data()
-        self.pin.forwardKinematics(self.model, data, q)
-        return np.asarray(
-            data.oMi[self.wrist_joint_id].translation, dtype=float
-        ).copy()
-
-    def wrist_base_rotation(self, q123_rad: object) -> np.ndarray:
-        """Return the joint4 pre-rotation frame orientation for q1-q3."""
-        q123 = np.asarray(q123_rad, dtype=np.float64)
-        if q123.shape != (3,) or not np.all(np.isfinite(q123)):
-            raise ValueError("q123_rad must be a finite three-vector")
-        q = np.zeros(NUM_ARM_JOINTS, dtype=np.float64)
-        q[:3] = q123
-        data = self._thread_data()
-        self.pin.forwardKinematics(self.model, data, q)
-        return np.asarray(data.oMi[self.wrist_joint_id].rotation, dtype=float).copy()
-
-    def solve_wrist_orientation(
-        self,
-        q123_rad: object,
-        target_rotation: object,
-        *,
-        previous_q4_rad: float = 0.0,
-    ) -> tuple[np.ndarray, bool]:
-        """Solve q4-q6 exactly from q1-q3 and a target end-effector rotation.
-
-        The second return value reports whether the ZYX wrist decomposition used
-        its singular fallback. The exact result is intentionally not clipped.
-        """
-        q123 = np.asarray(q123_rad, dtype=np.float64)
-        if q123.shape != (3,) or not np.all(np.isfinite(q123)):
-            raise ValueError("q123_rad must be a finite three-vector")
-        target = self._rotation_matrix(target_rotation, "target_rotation")
-        previous_q4 = float(previous_q4_rad)
-        if not np.isfinite(previous_q4):
-            raise ValueError("previous_q4_rad must be finite")
-
-        normalized = (
-            self.wrist_base_rotation(q123).T
-            @ target
-            @ self._wrist_frame_constant.T
-        )
-        sine_q5 = float(np.clip(normalized[2, 0], -1.0, 1.0))
-        q5 = -float(np.arcsin(sine_q5))
-        cosine_q5 = float(np.cos(q5))
-        singular = abs(cosine_q5) < 1e-6
-        if not singular:
-            q4 = float(np.arctan2(normalized[1, 0], normalized[0, 0]))
-            q6 = float(np.arctan2(normalized[2, 1], normalized[2, 2]))
-        else:
-            # At q5=+/-pi/2 only q4 +/- q6 is observable. The controller
-            # supplies the preceding q4 so the fallback does not jump.
-            q4 = previous_q4
-            if q5 >= 0.0:
-                q6 = q4 + float(np.arctan2(normalized[0, 1], normalized[1, 1]))
-            else:
-                q6 = float(np.arctan2(-normalized[0, 1], normalized[1, 1])) - q4
-            # If q6 is later allowed beyond +/-pi, unwrap it relative to the
-            # previous q6 before applying joint limits.
-        result = np.asarray((q4, q5, q6), dtype=np.float64)
-        if not np.all(np.isfinite(result)):
-            raise ValueError("closed-form wrist solution is non-finite")
-        return result, singular
-
-    def solve_position(
-        self,
-        target_position: object,
-        q_init_rad: object,
-        *,
-        max_iterations: int = 50,
-        tolerance_m: float = 5e-4,
-        step_size: float = 0.5,
-        damping: float = 1e-4,
-        control_mode: str = "position",
-        active_joint_indices: tuple[int, ...] = (0, 1, 2),
-    ) -> tuple[np.ndarray, bool, float]:
-        """Solve the joint4-origin XYZ using joint1-3.
-
-        q4-q6 are preserved in the returned vector but do not affect this
-        position objective.
-        """
-        target = np.asarray(target_position, dtype=float)
-        if target.shape != (3,) or not np.all(np.isfinite(target)):
-            raise ValueError("target_position must be a finite three-vector")
-        q = np.clip(
-            self._joint_vector(q_init_rad),
-            self.lower_position_limit,
-            self.upper_position_limit,
-        )
-        if control_mode != "position":
-            raise ValueError("B601Kinematics supports position-only IK")
-        if tuple(active_joint_indices) != (0, 1, 2):
-            raise ValueError("active_joint_indices must be exactly (0, 1, 2)")
-        if int(max_iterations) <= 0 or tolerance_m <= 0.0 or step_size <= 0.0 or damping < 0.0:
-            raise ValueError("invalid IK solver parameters")
-
-        error, jacobian = self._position_error_and_jacobian(q, target)
-        error_norm = float(np.linalg.norm(error))
-        for _ in range(int(max_iterations)):
-            if error_norm <= tolerance_m:
-                return q.copy(), True, error_norm
-            active_jacobian = jacobian[:, POSITION_JOINT_INDICES]
-            adaptive_damping = float(damping) * max(1.0, error_norm * 10.0)
-            normal = active_jacobian @ active_jacobian.T
-            normal.flat[:: normal.shape[0] + 1] += adaptive_damping
-            try:
-                delta = float(step_size) * (
-                    active_jacobian.T @ np.linalg.solve(normal, error)
-                )
-            except np.linalg.LinAlgError:
-                break
-            max_delta = float(np.max(np.abs(delta)))
-            if max_delta > 0.2:
-                delta *= 0.2 / max_delta
-
-            improved = False
-            alpha = 1.0
-            for _ in range(6):
-                candidate = q.copy()
-                candidate[POSITION_JOINT_INDICES] += alpha * delta
-                candidate = np.clip(
-                    candidate,
-                    self.lower_position_limit,
-                    self.upper_position_limit,
-                )
-                candidate_error, candidate_jacobian = self._position_error_and_jacobian(
-                    candidate, target
-                )
-                candidate_norm = float(np.linalg.norm(candidate_error))
-                if candidate_norm < error_norm:
-                    q = candidate
-                    error = candidate_error
-                    jacobian = candidate_jacobian
-                    error_norm = candidate_norm
-                    improved = True
-                    break
-                alpha *= 0.5
-            if not improved:
-                break
-        return q.copy(), error_norm <= tolerance_m, error_norm
-
-    def _position_error_and_jacobian(
-        self, q: np.ndarray, target: np.ndarray
-    ) -> tuple[np.ndarray, np.ndarray]:
-        data = self._thread_data()
-        self.pin.forwardKinematics(self.model, data, q)
-        actual = np.asarray(
-            data.oMi[self.wrist_joint_id].translation, dtype=float
-        )
         self.pin.computeJointJacobians(self.model, data, q)
-        jacobian = self.pin.getJointJacobian(
-            self.model,
-            data,
-            self.wrist_joint_id,
-            self.pin.ReferenceFrame.LOCAL_WORLD_ALIGNED,
-        )[:3, :NUM_ARM_JOINTS]
-        return target - actual, np.asarray(jacobian, dtype=float).copy()
+        self.pin.updateFramePlacements(self.model, data)
+        jacobian = self.pin.getFrameJacobian(
+            self.model, data, self.frame_id, self.pin.ReferenceFrame.LOCAL_WORLD_ALIGNED
+        )
+        return np.asarray(jacobian, dtype=np.float64)[:, :NUM_ARM_JOINTS].copy()
+
+    def tcp_pose_error(self, q_rad: object, target_position: object, target_rotation: object) -> np.ndarray:
+        """World-frame SE(3) error [position; rotation-vector], target minus actual."""
+        position, rotation = self.forward_kinematics(q_rad)
+        target_p = np.asarray(target_position, dtype=np.float64)
+        if target_p.shape != (3,) or not np.all(np.isfinite(target_p)):
+            raise ValueError("target_position must be a finite three-vector")
+        target_r = self._rotation_matrix(target_rotation, "target_rotation")
+        rotvec = Rotation.from_matrix(target_r @ rotation.T).as_rotvec()
+        return np.concatenate((target_p - position, rotvec))
+
 
     def _thread_data(self):
         data = getattr(self._thread_local, "data", None)
@@ -298,4 +232,4 @@ class B601Kinematics:
         return matrix.copy()
 
 
-__all__ = ["B601Kinematics", "NUM_ARM_JOINTS", "POSITION_JOINT_INDICES", "default_urdf_path"]
+__all__ = ["B601Kinematics", "FullBodyQPIKSolver", "NUM_ARM_JOINTS", "default_urdf_path"]

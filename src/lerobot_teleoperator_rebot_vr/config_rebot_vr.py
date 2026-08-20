@@ -45,11 +45,14 @@ class RebotVRConfig:
     orientation_filter_hz: float = 6.0
     position_deadband_m: float = 5e-4
     orientation_deadband_rad: float = float(np.deg2rad(0.25))
-    ik_rate_hz: float = 100.0
-    ik_max_iterations: int = 50
-    ik_tolerance_m: float = 5e-4
-    ik_damping: float = 1e-4
-    max_solution_jump_rad: float = 0.5
+    qp_solver: str = "scipy"
+    qp_position_cost: float = 20.0
+    qp_orientation_cost: float = 2.0
+    qp_damping: float = 1e-3
+    qp_smoothness_cost: float = 0.05
+    qp_posture_cost: float = 0.01
+    joint_limit_margin_deg: float = 2.0
+    qp_max_solve_time_ms: float = 8.0
     max_joint_speed_rad_s: float = 2.0
     max_joint_acceleration_rad_s2: float = 8.0
     feedback_fault_max_consecutive: int = 5
@@ -84,6 +87,8 @@ class RebotVRConfig:
             raise ValueError("vr_backend must be 'isaac' or 'xrobotoolkit_v1'")
         if self.hand_side not in ("left", "right"):
             raise ValueError("hand_side must be 'left' or 'right'")
+        if self.qp_solver not in ("scipy", "osqp"):
+            raise ValueError("qp_solver must be scipy or osqp")
         if not 0.0 <= self.clutch_release_threshold < self.clutch_threshold <= 1.0:
             raise ValueError(
                 "clutch thresholds must satisfy 0 <= release < press <= 1"
@@ -103,7 +108,6 @@ class RebotVRConfig:
                 self.orientation_filter_hz,
                 self.position_deadband_m,
                 self.orientation_deadband_rad,
-                self.ik_damping,
             ),
             dtype=float,
         )
@@ -113,9 +117,6 @@ class RebotVRConfig:
             raise ValueError("Cartesian scales, filters, deadbands, and damping must be non-negative")
         cartesian_positive = np.asarray(
             (
-                self.ik_rate_hz,
-                self.ik_tolerance_m,
-                self.max_solution_jump_rad,
                 self.max_joint_speed_rad_s,
                 self.max_joint_acceleration_rad_s2,
                 self.gripper_max_speed_deg_s,
@@ -127,8 +128,6 @@ class RebotVRConfig:
             cartesian_positive <= 0.0
         ):
             raise ValueError("Cartesian rates and motion limits must be positive")
-        if self.ik_max_iterations <= 0:
-            raise ValueError("ik_max_iterations must be positive")
         if self.feedback_fault_max_consecutive <= 0:
             raise ValueError("feedback_fault_max_consecutive must be positive")
         if np.asarray(self.initial_q_rad).shape != (6,) or not np.all(

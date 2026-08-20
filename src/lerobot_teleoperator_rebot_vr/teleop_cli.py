@@ -54,12 +54,15 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
     mapping.add_argument("--orientation-deadband-deg", type=float, default=0.25)
 
     ik = parser.add_argument_group("IK and safety")
+    ik.add_argument("--qp-solver", choices=("scipy", "osqp"), default="scipy")
+    ik.add_argument("--qp-position-cost", type=float, default=20.0)
+    ik.add_argument("--qp-orientation-cost", type=float, default=2.0)
+    ik.add_argument("--qp-damping", type=float, default=1e-3)
+    ik.add_argument("--qp-smoothness-cost", type=float, default=0.05)
+    ik.add_argument("--qp-posture-cost", type=float, default=0.01)
+    ik.add_argument("--joint-limit-margin-deg", type=float, default=2.0)
+    ik.add_argument("--qp-max-solve-time-ms", type=float, default=8.0)
     ik.add_argument("--urdf", type=Path)
-    ik.add_argument("--ik-rate", type=float, default=100.0)
-    ik.add_argument("--ik-max-iterations", type=int, default=50)
-    ik.add_argument("--ik-tolerance-m", type=float, default=5e-4)
-    ik.add_argument("--ik-damping", type=float, default=1e-4)
-    ik.add_argument("--max-solution-jump-rad", type=float, default=0.5)
     ik.add_argument("--max-joint-speed-rad-s", type=float, default=5.5)
     ik.add_argument("--max-joint-acceleration-rad-s2", type=float, default=20.0)
     ik.add_argument("--wrist-speed-rad-s", type=float, default=12.0, help="q4-q6 speed limit (rad/s)")
@@ -83,8 +86,7 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
 
 def validate_args(args: argparse.Namespace) -> None:
     positive = {
-        "stale-timeout": args.stale_timeout, "ik-rate": args.ik_rate,
-        "ik-tolerance-m": args.ik_tolerance_m, "max-solution-jump-rad": args.max_solution_jump_rad,
+        "stale-timeout": args.stale_timeout,
         "max-joint-speed-rad-s": args.max_joint_speed_rad_s,
         "max-joint-acceleration-rad-s2": args.max_joint_acceleration_rad_s2,
         "max-relative-target-deg": args.max_relative_target_deg,
@@ -117,8 +119,11 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError(f"the following parameters must be non-negative: {', '.join(invalid)}")
     if args.duration < 0.0:
         raise ValueError("duration must be non-negative")
-    if args.ik_max_iterations <= 0 or args.ik_damping < 0.0:
-        raise ValueError("IK iterations must be positive and damping must be non-negative")
+    qp_values = (args.qp_position_cost, args.qp_orientation_cost, args.qp_damping,
+                 args.qp_smoothness_cost, args.qp_posture_cost, args.joint_limit_margin_deg,
+                 args.qp_max_solve_time_ms)
+    if not np.all(np.isfinite(qp_values)) or args.qp_position_cost <= 0 or args.qp_orientation_cost < 0 or args.qp_damping < 0 or args.qp_smoothness_cost < 0 or args.qp_posture_cost < 0 or args.joint_limit_margin_deg < 0 or args.qp_max_solve_time_ms <= 0:
+        raise ValueError("invalid QP parameters")
     if args.feedback_fault_max_consecutive <= 0:
         raise ValueError("feedback-fault-max-consecutive must be positive")
     if not 0.0 <= args.gripper_torque_ratio <= 1.0:

@@ -108,7 +108,19 @@ def test_registered_teleop_features_include_required_robot_feedback(tmp_path) ->
     assert teleop.is_calibrated
 
 
-def test_registered_teleop_fails_closed_without_feedback_then_uses_split_controller(
+def test_real_runner_uses_pos_vel_for_arm_control() -> None:
+    source = (
+        __import__("pathlib")
+        .Path(__file__)
+        .parents[1]
+        .joinpath("src/lerobot_teleoperator_rebot_vr/teleoperate_real.py")
+        .read_text()
+    )
+    assert 'control_mode="pos_vel"' in source
+    assert 'control_mode="mit"' not in source
+
+
+def test_registered_teleop_fails_closed_without_feedback_then_uses_qp_controller(
     tmp_path,
 ) -> None:
     controller = FakeController(

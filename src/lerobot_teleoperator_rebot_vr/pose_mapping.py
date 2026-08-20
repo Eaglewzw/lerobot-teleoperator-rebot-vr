@@ -360,7 +360,13 @@ class RelativePoseMapper:
         if sample_key == previous_key:
             return previous
 
-        elapsed_s = max(0.0, (sample_key[1] - previous_key[1]) * 1e-9)
+        # Some V1 senders omit timeStampNs (parsed as zero) or restart their
+        # upstream clock. Filtering must remain tied to PC receive time in
+        # those cases, otherwise alpha becomes 1 and the low-pass is bypassed.
+        if sample_key[1] > 0 and previous_key[1] > 0 and sample_key[1] > previous_key[1]:
+            elapsed_s = (sample_key[1] - previous_key[1]) * 1e-9
+        else:
+            elapsed_s = max(0.0, (sample_key[2] - previous_key[2]) * 1e-9)
         position_delta = target.position - previous.position
         if np.linalg.norm(position_delta) < self.position_deadband_m:
             position_delta = np.zeros(3, dtype=np.float64)

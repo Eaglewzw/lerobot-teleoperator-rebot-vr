@@ -8,11 +8,11 @@ import pytest
 from scipy.spatial.transform import Rotation
 
 import lerobot_teleoperator_rebot_vr.cartesian_controller as cartesian_controller_module
-from lerobot_teleoperator_rebot_vr.async_ik import IKRequest, IKResult, LatestOnlyIKWorker
+from lerobot_teleoperator_rebot_vr.async_ik import IKRequest, IKResult, LatestOnlyQPIKWorker
 from lerobot_teleoperator_rebot_vr.cartesian_controller import (
     ARM_JOINT_NAMES,
     CartesianControlConfig,
-    SplitArmWristController,
+    FullBodyQPIKController,
 )
 from lerobot_teleoperator_rebot_vr.config_rebot_vr import DEFAULT_BASE_T_ANCHOR
 from lerobot_teleoperator_rebot_vr.joint_command import (
@@ -37,7 +37,6 @@ from lerobot_teleoperator_rebot_vr.teleoperate_real import (
     _status_line,
     _validate_args,
 )
-from lerobot_teleoperator_rebot_vr.wrist_mapping import ClosedFormWristSolver
 
 
 XR_TO_BASE = np.asarray(DEFAULT_BASE_T_ANCHOR, dtype=np.float64)[:3, :3]
@@ -110,15 +109,6 @@ class FakeKinematics:
         q = np.asarray(q_rad, dtype=np.float64)
         return q[:3].copy(), Rotation.from_euler("ZYX", q[3:6]).as_matrix()
 
-    def wrist_center_position(self, q_rad: np.ndarray) -> np.ndarray:
-        return np.asarray(q_rad, dtype=np.float64)[:3].copy()
-
-    def solve_wrist_orientation(
-        self, _q123_rad: np.ndarray, target_rotation: np.ndarray, *, previous_q4_rad=0.0
-    ) -> tuple[np.ndarray, bool]:
-        del previous_q4_rad
-        return Rotation.from_matrix(target_rotation).as_euler("ZYX"), False
-
 
 class ImmediateIKWorker:
     def __init__(self) -> None:
@@ -143,7 +133,6 @@ class ImmediateIKWorker:
         self.requests.append(request)
         q_target = request.q_seed_rad.copy()
         q_target[:3] = request.target.position
-        q_target[3:6] = request.wrist_target_rad
         self.result = IKResult(
             generation=request.generation,
             sequence=request.sequence,
@@ -183,7 +172,7 @@ def _observation(q_deg=(0.0, -60.0, -70.0, 0.0, 0.0, 0.0), gripper=-270.0):
 
 def test_closed_loop_starts_from_actual_pose_and_atomically_applies_arm_and_wrist_target() -> None:
     worker = ImmediateIKWorker()
-    controller = SplitArmWristController(
+    controller = FullBodyQPIKController(
         FakeKinematics(),
         xr_to_base_rotation=XR_TO_BASE,
         config=CartesianControlConfig(
@@ -228,18 +217,69 @@ def test_closed_loop_starts_from_actual_pose_and_atomically_applies_arm_and_wris
     assert status.ik_success is True
     expected_rad = np.deg2rad(np.array([0.0, -60.0, -70.0, 0.0, 0.0, 0.0]))
     expected_rad[0] += 0.1
-    expected_rad[3:6] = Rotation.from_matrix(rotation_base).as_euler("ZYX")
+    expected_rad[3:6] = 0.0
     assert [moved[f"{name}.pos"] for name in ARM_JOINT_NAMES] == pytest.approx(
         np.rad2deg(expected_rad)
     )
     request = worker.requests[-1]
     assert request.target.sample_id == now + 40_000_000
-    assert request.wrist_target_rad == pytest.approx(expected_rad[3:6])
+
+
+def test_completed_qp_is_consumed_before_next_submission_and_keeps_its_own_velocity() -> None:
+    worker = ImmediateIKWorker()
+    controller = FullBodyQPIKController(
+        FakeKinematics(),
+        xr_to_base_rotation=XR_TO_BASE,
+        config=CartesianControlConfig(
+            position_filter_hz=0.0,
+            orientation_filter_hz=0.0,
+            position_deadband_m=0.0,
+            orientation_deadband_rad=0.0,
+            stale_timeout_s=1.0,
+            max_joint_speed_rad_s=1000.0,
+            max_joint_acceleration_rad_s2=1000.0,
+        ),
+        ik_worker=worker,
+    )
+    now = time.monotonic_ns()
+    observation = _observation()
+    controller.update(_frame(now), observation, 0.02, now_ns=now)
+    controller.update(
+        _frame(now + 20_000_000, grip=1.0),
+        observation,
+        0.02,
+        now_ns=now + 20_000_000,
+    )
+    controller.update(
+        _frame(now + 40_000_000, position=(0.1, 0.0, 0.0), grip=1.0),
+        observation,
+        0.02,
+        now_ns=now + 40_000_000,
+    )
+    first_request = worker.requests[-1]
+    assert worker.result is not None
+    expected_qp_velocity = (
+        worker.result.q_target_rad - first_request.q_actual
+    ) / first_request.dt
+
+    # The outer shaper may clamp/reset its own velocity between QP solves.
+    outer_velocity = np.full(6, -123.0)
+    controller._dq_command_rad_s[:] = outer_velocity
+    controller.update(
+        _frame(now + 60_000_000, position=(0.2, 0.0, 0.0), grip=1.0),
+        observation,
+        0.02,
+        now_ns=now + 60_000_000,
+    )
+
+    assert worker.submitted == 2
+    assert worker.requests[-1].dq_previous == pytest.approx(expected_qp_velocity)
+    assert worker.requests[-1].dq_previous != pytest.approx(outer_velocity)
 
 
 def test_wrist_target_updates_when_position_ik_fails() -> None:
     worker = FailingIKWorker()
-    controller = SplitArmWristController(
+    controller = FullBodyQPIKController(
         FakeKinematics(),
         xr_to_base_rotation=XR_TO_BASE,
         config=CartesianControlConfig(
@@ -279,8 +319,6 @@ def test_wrist_target_updates_when_position_ik_fails() -> None:
     assert controller._q_goal_rad[:3] == pytest.approx(
         np.deg2rad([0.0, -60.0, -70.0])
     )
-    assert controller._q_goal_rad[3:6] == pytest.approx([0.3, 0.0, 0.0])
-    assert action["wrist_flex.pos"] == pytest.approx(np.rad2deg(0.3))
     assert status.orientation_error_deg == pytest.approx(np.rad2deg(0.3))
     assert status.wrist_clip_deg == pytest.approx(0.0)
     rendered_status = _status_line(status)
@@ -289,7 +327,7 @@ def test_wrist_target_updates_when_position_ik_fails() -> None:
 
 
 def test_trigger_independently_maps_open_to_closed_gripper_and_reports_diagnostics() -> None:
-    controller = SplitArmWristController(
+    controller = FullBodyQPIKController(
         FakeKinematics(),
         xr_to_base_rotation=XR_TO_BASE,
         config=CartesianControlConfig(
@@ -322,7 +360,7 @@ def test_trigger_independently_maps_open_to_closed_gripper_and_reports_diagnosti
 
 
 def test_closed_loop_keeps_gripper_command_inside_follower_tracking_window() -> None:
-    controller = SplitArmWristController(
+    controller = FullBodyQPIKController(
         FakeKinematics(),
         xr_to_base_rotation=XR_TO_BASE,
         config=CartesianControlConfig(
@@ -347,7 +385,7 @@ def test_closed_loop_keeps_gripper_command_inside_follower_tracking_window() -> 
 
 def test_single_invalid_feedback_enters_hold_and_recovers_without_command_jump() -> None:
     worker = ImmediateIKWorker()
-    controller = SplitArmWristController(
+    controller = FullBodyQPIKController(
         FakeKinematics(),
         xr_to_base_rotation=XR_TO_BASE,
         config=CartesianControlConfig(
@@ -388,7 +426,7 @@ def test_single_invalid_feedback_enters_hold_and_recovers_without_command_jump()
 
 
 def test_consecutive_out_of_limit_feedback_requests_controlled_abort() -> None:
-    controller = SplitArmWristController(
+    controller = FullBodyQPIKController(
         FakeKinematics(),
         xr_to_base_rotation=XR_TO_BASE,
         config=CartesianControlConfig(
@@ -423,7 +461,7 @@ def test_consecutive_out_of_limit_feedback_requests_controlled_abort() -> None:
 
 
 def test_invalid_feedback_before_first_valid_sample_does_not_invent_a_command() -> None:
-    controller = SplitArmWristController(
+    controller = FullBodyQPIKController(
         FakeKinematics(),
         xr_to_base_rotation=XR_TO_BASE,
         config=CartesianControlConfig(feedback_fault_max_consecutive=2),
@@ -539,7 +577,7 @@ def test_follower_wrist_limits_use_scalar_fallback_or_complete_motor_dict() -> N
     }
 
 
-def test_controller_passes_split_arm_wrist_motion_limits(monkeypatch) -> None:
+def test_controller_passes_full_body_motion_limits(monkeypatch) -> None:
     shape_calls: list[tuple[np.ndarray, np.ndarray]] = []
     bound_calls: list[np.ndarray] = []
     gripper_bound_calls: list[float] = []
@@ -569,7 +607,7 @@ def test_controller_passes_split_arm_wrist_motion_limits(monkeypatch) -> None:
     monkeypatch.setattr(
         cartesian_controller_module, "bound_position_command_to_feedback", recording_bound
     )
-    controller = SplitArmWristController(
+    controller = FullBodyQPIKController(
         FakeKinematics(),
         xr_to_base_rotation=XR_TO_BASE,
         config=CartesianControlConfig(
@@ -606,13 +644,13 @@ def test_controller_wrist_limit_none_falls_back_without_behavior_change() -> Non
         max_joint_acceleration_rad_s2=1.0,
         max_command_feedback_error_deg=1.8,
     )
-    fallback = SplitArmWristController(
+    fallback = FullBodyQPIKController(
         FakeKinematics(),
         xr_to_base_rotation=XR_TO_BASE,
         config=CartesianControlConfig(**common),
         ik_worker=ImmediateIKWorker(),
     )
-    explicit = SplitArmWristController(
+    explicit = FullBodyQPIKController(
         FakeKinematics(),
         xr_to_base_rotation=XR_TO_BASE,
         config=CartesianControlConfig(
@@ -756,7 +794,7 @@ def test_startup_pose_accepts_one_degree_zero_feedback_tolerance() -> None:
 
 
 def test_closed_loop_holds_feedback_outside_dm_kinematic_limits() -> None:
-    controller = SplitArmWristController(
+    controller = FullBodyQPIKController(
         FakeKinematics(),
         xr_to_base_rotation=XR_TO_BASE,
         ik_worker=ImmediateIKWorker(),
@@ -774,7 +812,7 @@ def test_closed_loop_holds_feedback_outside_dm_kinematic_limits() -> None:
 
 
 def test_closed_loop_accepts_small_dm_zero_error_but_commands_hard_limit() -> None:
-    controller = SplitArmWristController(
+    controller = FullBodyQPIKController(
         FakeKinematics(),
         xr_to_base_rotation=XR_TO_BASE,
         ik_worker=ImmediateIKWorker(),
@@ -790,7 +828,7 @@ def test_closed_loop_accepts_small_dm_zero_error_but_commands_hard_limit() -> No
 
 
 def test_closed_loop_holds_feedback_angle_beyond_dm_zero_tolerance() -> None:
-    controller = SplitArmWristController(
+    controller = FullBodyQPIKController(
         FakeKinematics(),
         xr_to_base_rotation=XR_TO_BASE,
         ik_worker=ImmediateIKWorker(),
@@ -810,7 +848,7 @@ def test_closed_loop_holds_feedback_angle_beyond_dm_zero_tolerance() -> None:
 
 def test_tracking_loss_holds_actual_and_new_stream_requires_release() -> None:
     worker = ImmediateIKWorker()
-    controller = SplitArmWristController(
+    controller = FullBodyQPIKController(
         FakeKinematics(),
         xr_to_base_rotation=XR_TO_BASE,
         config=CartesianControlConfig(
@@ -869,233 +907,14 @@ def test_tracking_loss_holds_actual_and_new_stream_requires_release() -> None:
         now_ns=now + 60_000_000,
     )
     assert status.state is TeleopState.ACTIVE
+    assert worker.submitted == moved_count
+    controller.update(
+        _frame(now + 70_000_000, grip=1.0, stream_epoch=2),
+        observation,
+        0.02,
+        now_ns=now + 70_000_000,
+    )
     assert worker.submitted == moved_count + 1
-
-
-class SolverKinematics(FakeKinematics):
-    def __init__(self, candidate: np.ndarray | None = None, error: Exception | None = None):
-        self.candidate = candidate
-        self.error = error
-
-    def solve_position(self, _target, q_init_rad, **_kwargs):
-        if self.error is not None:
-            raise self.error
-        candidate = q_init_rad.copy() if self.candidate is None else self.candidate.copy()
-        return candidate, True, 0.0
-
-
-def test_async_ik_rejects_branch_jump_and_solver_exception_without_raising() -> None:
-    request = IKRequest(
-        generation=1,
-        sequence=1,
-        target=PoseTarget(123, np.zeros(3), np.eye(3)),
-        q_seed_rad=np.array([0.0, -1.0, -1.0, 0.0, 0.0, 0.0]),
-        wrist_target_rad=np.array([0.1, 0.2, 0.3]),
-    )
-    jumping = LatestOnlyIKWorker(
-        SolverKinematics(np.array([1.0, -1.0, -1.0, 0.0, 0.0, 0.0])),
-        max_solution_jump_rad=0.2,
-    )._solve(request)
-    assert not jumping.success
-    assert jumping.reason == "branch_jump"
-
-    failed = LatestOnlyIKWorker(SolverKinematics(error=RuntimeError("failure")))._solve(request)
-    assert not failed.success
-    assert failed.reason == "solver_exception:RuntimeError"
-
-
-def test_async_ik_rate_wait_keeps_only_latest_pending_request() -> None:
-    solved_samples: list[int] = []
-    solved_event = threading.Event()
-
-    class RecordingKinematics(SolverKinematics):
-        def solve_position(self, target, q_init_rad, **kwargs):
-            solved_samples.append(int(target[0]))
-            if len(solved_samples) >= 2:
-                solved_event.set()
-            return super().solve_position(target, q_init_rad, **kwargs)
-
-    worker = LatestOnlyIKWorker(RecordingKinematics(), rate_hz=5.0)
-    seed = np.array([0.0, -1.0, -1.0, 0.0, 0.0, 0.0])
-
-    def request(sequence: int) -> IKRequest:
-        return IKRequest(
-            generation=1,
-            sequence=sequence,
-            target=PoseTarget(sequence, np.array([float(sequence), 0.0, 0.0]), np.eye(3)),
-            q_seed_rad=seed,
-            wrist_target_rad=np.zeros(3),
-        )
-
-    worker.start()
-    try:
-        worker.submit(request(1))
-        deadline = time.monotonic() + 1.0
-        while worker.solved < 1 and time.monotonic() < deadline:
-            time.sleep(0.005)
-        assert worker.solved == 1
-        worker.submit(request(2))
-        time.sleep(0.02)
-        worker.submit(request(3))
-        assert solved_event.wait(timeout=1.0)
-    finally:
-        worker.stop()
-
-    assert solved_samples == [1, 3]
-
-
-def test_packaged_dm_pinocchio_position_ik_round_trip() -> None:
-    pytest.importorskip("pinocchio")
-    from lerobot_teleoperator_rebot_vr.kinematics import B601Kinematics
-
-    kinematics = B601Kinematics()
-    assert kinematics.lower_position_limit[1:3] == pytest.approx([-3.14, -3.14])
-    assert kinematics.upper_position_limit[1:3] == pytest.approx([0.0, 0.0])
-    q_seed = np.array([0.0, -1.0, -1.0, 0.1, -0.2, 0.3])
-    q_expected = q_seed.copy()
-    q_expected[:3] += [0.05, -0.04, -0.03]
-    target_position = kinematics.wrist_center_position(q_expected)
-    q_result, success, error_m = kinematics.solve_position(
-        target_position,
-        q_seed,
-        max_iterations=100,
-        tolerance_m=5e-4,
-        damping=1e-4,
-    )
-    actual_position = kinematics.wrist_center_position(q_result)
-    assert success
-    assert error_m <= 5e-4
-    assert np.linalg.norm(actual_position - target_position) <= 5e-4
-    assert q_result[3:6] == pytest.approx(q_seed[3:6])
-
-
-def test_wrist_center_position_is_independent_of_q456() -> None:
-    pytest.importorskip("pinocchio")
-    from lerobot_teleoperator_rebot_vr.kinematics import B601Kinematics
-
-    kinematics = B601Kinematics()
-    q_a = np.array([0.4, -1.0, -0.8, 0.0, 0.0, 0.0])
-    q_b = np.array([0.4, -1.0, -0.8, 1.0, -0.8, 1.2])
-    try:
-        center_a = kinematics.wrist_center_position(q_a)
-        center_b = kinematics.wrist_center_position(q_b)
-        tip_a, _ = kinematics.forward_kinematics(q_a)
-        tip_b, _ = kinematics.forward_kinematics(q_b)
-        assert center_b == pytest.approx(center_a, abs=1e-10)
-        assert np.linalg.norm(tip_b - tip_a) > 0.01
-    finally:
-        kinematics.close()
-
-
-def test_closed_form_wrist_round_trip_across_q1_workspace() -> None:
-    pytest.importorskip("pinocchio")
-    from lerobot_teleoperator_rebot_vr.kinematics import B601Kinematics
-
-    kinematics = B601Kinematics()
-    q23_cases = ((-1.0, -1.0), (-0.5, -1.5), (-1.5, -0.5))
-    wrist_cases = (
-        (0.0, 0.0, 0.0),
-        (0.8, 0.5, -0.7),
-        (-1.2, np.deg2rad(80.0), 1.3),
-        (1.3, np.deg2rad(-80.0), -1.4),
-    )
-    try:
-        for q1 in np.deg2rad(
-            [-150, -120, -90, -60, -30, 0, 30, 60, 90, 120, 150]
-        ):
-            for q2, q3 in q23_cases:
-                q123 = np.asarray((q1, q2, q3), dtype=np.float64)
-                for q456_true in wrist_cases:
-                    q_true = np.concatenate((q123, q456_true))
-                    _, target_rotation = kinematics.forward_kinematics(q_true)
-                    q456, singular = kinematics.solve_wrist_orientation(
-                        q123, target_rotation
-                    )
-                    _, achieved_rotation = kinematics.forward_kinematics(
-                        np.concatenate((q123, q456))
-                    )
-                    error_rad = Rotation.from_matrix(
-                        achieved_rotation @ target_rotation.T
-                    ).magnitude()
-                    assert not singular
-                    assert error_rad < 1e-4
-    finally:
-        kinematics.close()
-
-
-def test_wrist_frame_constant_is_independent_of_q123() -> None:
-    pytest.importorskip("pinocchio")
-    from lerobot_teleoperator_rebot_vr.kinematics import B601Kinematics
-
-    kinematics = B601Kinematics()
-    try:
-        for q123 in (
-            np.zeros(3),
-            np.array([0.3, -0.9, -0.7]),
-            np.array([-1.2, -1.5, -0.4]),
-        ):
-            q = np.concatenate((q123, np.zeros(3)))
-            derived = (
-                kinematics.wrist_base_rotation(q123).T
-                @ kinematics.forward_kinematics(q)[1]
-            )
-            assert derived == pytest.approx(
-                kinematics.wrist_frame_constant, abs=1e-6
-            )
-    finally:
-        kinematics.close()
-
-
-def test_closed_form_wrist_reports_and_clips_limit_violation() -> None:
-    pytest.importorskip("pinocchio")
-    from lerobot_teleoperator_rebot_vr.kinematics import B601Kinematics
-
-    kinematics = B601Kinematics()
-    lower = np.array([-1.4, -1.57, -1.57])
-    upper = np.array([1.4, 1.57, 1.57])
-    solver = ClosedFormWristSolver(
-        kinematics, joint_lower=lower, joint_upper=upper
-    )
-    q123 = np.array([0.4, -1.0, -0.8])
-    q_true = np.concatenate((q123, [0.2, -0.3, 2.0]))
-    try:
-        _, target_rotation = kinematics.forward_kinematics(q_true)
-        clipped, violation_rad = solver.solve(q123, target_rotation)
-        assert violation_rad > 0.4
-        assert clipped == pytest.approx([0.2, -0.3, upper[2]], abs=2e-5)
-        assert np.all(clipped >= lower)
-        assert np.all(clipped <= upper)
-    finally:
-        kinematics.close()
-
-
-@pytest.mark.parametrize("q5", [np.pi / 2.0, -np.pi / 2.0])
-def test_closed_form_wrist_singular_fallback_is_finite(q5: float) -> None:
-    pytest.importorskip("pinocchio")
-    from lerobot_teleoperator_rebot_vr.kinematics import B601Kinematics
-
-    kinematics = B601Kinematics()
-    q123 = np.array([-0.6, -1.1, -0.7])
-    q456_true = np.array([0.4, q5, -0.7])
-    try:
-        target_rotation = (
-            kinematics.wrist_base_rotation(q123)
-            @ Rotation.from_euler("ZYX", q456_true).as_matrix()
-            @ kinematics.wrist_frame_constant
-        )
-        q456, singular = kinematics.solve_wrist_orientation(
-            q123, target_rotation, previous_q4_rad=q456_true[0]
-        )
-        assert singular
-        assert np.all(np.isfinite(q456))
-        _, achieved_rotation = kinematics.forward_kinematics(
-            np.concatenate((q123, q456))
-        )
-        assert Rotation.from_matrix(
-            achieved_rotation @ target_rotation.T
-        ).magnitude() < 1e-4
-    finally:
-        kinematics.close()
 
 
 def test_packaged_dm_urdf_documents_physical_wrist_axis_signs() -> None:

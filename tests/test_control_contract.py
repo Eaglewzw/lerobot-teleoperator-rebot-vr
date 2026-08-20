@@ -9,12 +9,12 @@ from scipy.spatial.transform import Rotation
 from lerobot_teleoperator_rebot_vr.async_ik import (
     IKRequest,
     IKResult,
-    LatestOnlyIKWorker,
+    LatestOnlyQPIKWorker,
 )
 from lerobot_teleoperator_rebot_vr.cartesian_controller import (
     ARM_JOINT_NAMES,
     CartesianControlConfig,
-    SplitArmWristController,
+    FullBodyQPIKController,
 )
 from lerobot_teleoperator_rebot_vr.joint_command import shape_joint_position_command
 from lerobot_teleoperator_rebot_vr.pose_mapping import (
@@ -36,10 +36,13 @@ def _sample(
     primary=False,
     secondary=False,
     epoch=1,
+    tracking_timestamp_ns: int | None = None,
 ) -> ControllerSample:
     return ControllerSample(
         received_monotonic_ns=received_ns,
-        tracking_timestamp_ns=received_ns,
+        tracking_timestamp_ns=(
+            received_ns if tracking_timestamp_ns is None else tracking_timestamp_ns
+        ),
         stream_epoch=epoch,
         side="right",
         position=position,
@@ -172,6 +175,44 @@ def test_pose_filter_and_deadband_run_once_per_latest_sample() -> None:
     assert repeated.target.rotation == pytest.approx(first.target.rotation)
 
 
+def test_pose_filter_uses_receive_time_when_upstream_timestamp_is_missing() -> None:
+    mapper = RelativePoseMapper(
+        xr_to_world=np.eye(3),
+        position_filter_hz=1.0,
+        orientation_filter_hz=1.0,
+        position_deadband_m=0.0,
+        orientation_deadband_rad=0.0,
+        stale_timeout_s=1.0,
+    )
+    base = 4_000_000_000
+    mapper.update(
+        _sample(base, tracking_timestamp_ns=0),
+        np.zeros(3),
+        np.eye(3),
+        now_ns=base,
+    )
+    captured = mapper.update(
+        _sample(base + 10_000_000, grip=1.0, tracking_timestamp_ns=0),
+        np.zeros(3),
+        np.eye(3),
+        now_ns=base + 10_000_000,
+    )
+    moved = mapper.update(
+        _sample(
+            base + 110_000_000,
+            position=(0.1, 0.0, 0.0),
+            grip=1.0,
+            tracking_timestamp_ns=0,
+        ),
+        np.zeros(3),
+        np.eye(3),
+        now_ns=base + 110_000_000,
+    )
+    assert captured.reference_captured
+    alpha = 1.0 - np.exp(-2.0 * np.pi * 1.0 * 0.1)
+    assert moved.target.position == pytest.approx([0.1 * alpha, 0.0, 0.0])
+
+
 class FakeKinematics:
     lower_position_limit = np.array([-2.8, -3.14, -3.14, -1.4, -1.5, -1.5])
     upper_position_limit = np.array([2.8, 0.0, 0.0, 1.4, 1.5, 1.5])
@@ -179,15 +220,6 @@ class FakeKinematics:
     def forward_kinematics(self, q_rad):
         q = np.asarray(q_rad, dtype=np.float64)
         return q[:3].copy(), Rotation.from_euler("ZYX", q[3:6]).as_matrix()
-
-    def wrist_center_position(self, q_rad):
-        return np.asarray(q_rad, dtype=np.float64)[:3].copy()
-
-    def solve_wrist_orientation(
-        self, _q123_rad, target_rotation, *, previous_q4_rad=0.0
-    ):
-        del previous_q4_rad
-        return Rotation.from_matrix(target_rotation).as_euler("ZYX"), False
 
 
 class ImmediateWorker:
@@ -252,7 +284,7 @@ def _legacy_frame(now_ns: int, **kwargs) -> VRFrame:
 
 def test_primary_button_edge_returns_home_and_requires_grip_release() -> None:
     worker = ImmediateWorker()
-    controller = SplitArmWristController(
+    controller = FullBodyQPIKController(
         FakeKinematics(),
         xr_to_base_rotation=DEFAULT_XR_TO_WORLD,
         config=CartesianControlConfig(
@@ -311,7 +343,7 @@ def test_primary_button_edge_returns_home_and_requires_grip_release() -> None:
 
 def test_secondary_button_edge_returns_zero_smoothly_and_requires_grip_release() -> None:
     worker = ImmediateWorker()
-    controller = SplitArmWristController(
+    controller = FullBodyQPIKController(
         FakeKinematics(),
         xr_to_base_rotation=DEFAULT_XR_TO_WORLD,
         config=CartesianControlConfig(
@@ -389,44 +421,6 @@ def test_secondary_button_edge_returns_zero_smoothly_and_requires_grip_release()
     assert rearmed.state is TeleopState.ACTIVE
 
 
-class RecordingSolver(FakeKinematics):
-    def __init__(self) -> None:
-        self.kwargs: dict[str, object] = {}
-        self.seed: np.ndarray | None = None
-
-    def solve_position(self, target, q_init_rad, **kwargs):
-        self.kwargs = kwargs
-        self.seed = q_init_rad.copy()
-        candidate = q_init_rad.copy()
-        candidate[:3] += 0.1
-        candidate[3:6] = 99.0
-        return candidate, True, 0.0
-
-
-def test_ik_request_contract_and_worker_restore_current_sample_wrist() -> None:
-    solver = RecordingSolver()
-    worker = LatestOnlyIKWorker(solver)
-    seed = np.array([0.0, -1.0, -1.0, 0.1, -0.2, 0.3])
-    request = IKRequest(
-        sequence=1,
-        generation=2,
-        sample_id=123,
-        target_position=np.array([0.2, 0.3, 0.4]),
-        q_seed=seed,
-        submitted_monotonic_ns=99,
-    )
-    worker._last_success = np.array([0.2, -0.9, -0.8, 8.0, 8.0, 8.0])
-    worker._last_success_generation = 2
-    result = worker._solve(request)
-    assert result.success
-    assert result.sample_id == 123
-    assert solver.seed[3:6] == pytest.approx(seed[3:6])
-    assert result.q_goal[3:6] == pytest.approx(seed[3:6])
-    assert solver.kwargs["control_mode"] == "position"
-    assert solver.kwargs["active_joint_indices"] == (0, 1, 2)
-    assert solver.kwargs["step_size"] == 0.5
-
-
 def test_command_shaper_formula_and_controller_dt_cap() -> None:
     position, velocity = shape_joint_position_command(
         previous_position=np.array([0.0]),
@@ -441,7 +435,7 @@ def test_command_shaper_formula_and_controller_dt_cap() -> None:
     assert velocity == pytest.approx([0.8])
     assert position == pytest.approx([0.08])
 
-    controller = SplitArmWristController(
+    controller = FullBodyQPIKController(
         FakeKinematics(),
         xr_to_base_rotation=DEFAULT_XR_TO_WORLD,
         config=CartesianControlConfig(

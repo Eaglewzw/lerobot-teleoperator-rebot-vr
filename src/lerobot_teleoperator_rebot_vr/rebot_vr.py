@@ -17,7 +17,7 @@ except ImportError:  # LeRobot 0.6.0/0.6.1 compatibility
 
 from .cartesian_controller import (
     CartesianControlConfig,
-    SplitArmWristController,
+    FullBodyQPIKController,
     vr_frame_from_raw_action,
 )
 from .config_rebot_vr import (
@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 
 class RebotVRTeleop(Teleoperator):
-    """Registered fixed split-arm/wrist controller.
+    """Registered feedback-synchronized full-body QP controller.
 
     LeRobot 0.6's generic B601 loops do not call ``send_feedback``. In those
     loops ``get_action`` fails closed instead of falling back to open-loop joint
@@ -48,7 +48,7 @@ class RebotVRTeleop(Teleoperator):
         self,
         config: RebotVRTeleopConfig,
         controller: VRController | None = None,
-        arm_controller: SplitArmWristController | None = None,
+        arm_controller: FullBodyQPIKController | None = None,
     ) -> None:
         super().__init__(config)
         self.config = config
@@ -90,6 +90,14 @@ class RebotVRTeleop(Teleoperator):
         if self._arm_controller is None:
             self._kinematics = B601Kinematics()
             control_config = CartesianControlConfig(
+                qp_solver=self.config.qp_solver,
+                qp_position_cost=self.config.qp_position_cost,
+                qp_orientation_cost=self.config.qp_orientation_cost,
+                qp_damping=self.config.qp_damping,
+                qp_smoothness_cost=self.config.qp_smoothness_cost,
+                qp_posture_cost=self.config.qp_posture_cost,
+                joint_limit_margin_deg=self.config.joint_limit_margin_deg,
+                qp_max_solve_time_ms=self.config.qp_max_solve_time_ms,
                 position_scale=self.config.position_scale,
                 orientation_scale=self.config.orientation_scale,
                 position_filter_hz=self.config.position_filter_hz,
@@ -99,11 +107,6 @@ class RebotVRTeleop(Teleoperator):
                 grip_press_threshold=self.config.clutch_threshold,
                 grip_release_threshold=self.config.clutch_release_threshold,
                 stale_timeout_s=self.config.stale_timeout,
-                ik_rate_hz=self.config.ik_rate_hz,
-                ik_max_iterations=self.config.ik_max_iterations,
-                ik_tolerance_m=self.config.ik_tolerance_m,
-                ik_damping=self.config.ik_damping,
-                max_solution_jump_rad=self.config.max_solution_jump_rad,
                 max_joint_speed_rad_s=self.config.max_joint_speed_rad_s,
                 max_joint_acceleration_rad_s2=self.config.max_joint_acceleration_rad_s2,
                 feedback_fault_max_consecutive=(
@@ -117,7 +120,7 @@ class RebotVRTeleop(Teleoperator):
                     self.config.gripper_max_acceleration_deg_s2
                 ),
             )
-            self._arm_controller = SplitArmWristController(
+            self._arm_controller = FullBodyQPIKController(
                 self._kinematics,
                 xr_to_base_rotation=np.asarray(
                     DEFAULT_BASE_T_ANCHOR, dtype=np.float64

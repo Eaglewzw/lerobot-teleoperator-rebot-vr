@@ -7,7 +7,7 @@ from typing import Protocol
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from .async_ik import IKRequest, IKResult, LatestOnlyIKWorker
+from .async_ik import IKRequest, IKResult, LatestOnlyQPIKWorker
 from .joint_command import (
     bound_position_command_to_feedback,
     shape_joint_position_command,
@@ -16,7 +16,7 @@ from .pose_mapping import RelativePoseMapper, TeleopState
 from .processor import VRFrame
 from .startup_pose import reference_initial_q_to_dm
 from .tracking import ControllerSample
-from .wrist_mapping import ClosedFormWristSolver
+from .kinematics import FullBodyQPIKSolver
 
 
 ARM_JOINT_NAMES = (
@@ -49,6 +49,14 @@ class IKWorker(Protocol):
 
 @dataclass(frozen=True)
 class CartesianControlConfig:
+    qp_solver: str = "scipy"
+    qp_position_cost: float = 20.0
+    qp_orientation_cost: float = 2.0
+    qp_damping: float = 1e-3
+    qp_smoothness_cost: float = 0.05
+    qp_posture_cost: float = 0.01
+    joint_limit_margin_deg: float = 2.0
+    qp_max_solve_time_ms: float = 8.0
     position_scale: float = 1.0
     orientation_scale: float = 1.0
     position_filter_hz: float = 8.0
@@ -58,11 +66,6 @@ class CartesianControlConfig:
     grip_press_threshold: float = 0.85
     grip_release_threshold: float = 0.75
     stale_timeout_s: float = 0.2
-    ik_rate_hz: float = 100.0
-    ik_max_iterations: int = 50
-    ik_tolerance_m: float = 5e-4
-    ik_damping: float = 1e-4
-    max_solution_jump_rad: float = 0.5
     max_joint_speed_rad_s: float = 2.0
     max_joint_acceleration_rad_s2: float = 8.0
     wrist_speed_rad_s: float | None = None
@@ -93,7 +96,9 @@ class CartesianControlConfig:
                 self.orientation_filter_hz,
                 self.position_deadband_m,
                 self.orientation_deadband_rad,
-                self.ik_damping,
+                self.qp_position_cost, self.qp_orientation_cost,
+                self.qp_damping, self.qp_smoothness_cost, self.qp_posture_cost,
+                self.joint_limit_margin_deg, self.qp_max_solve_time_ms,
             ),
             dtype=np.float64,
         )
@@ -102,13 +107,11 @@ class CartesianControlConfig:
         positive = np.asarray(
             (
                 self.stale_timeout_s,
-                self.ik_rate_hz,
-                self.ik_tolerance_m,
-                self.max_solution_jump_rad,
                 self.max_joint_speed_rad_s,
                 self.max_joint_acceleration_rad_s2,
                 self.gripper_max_speed_deg_s,
                 self.gripper_max_acceleration_deg_s2,
+                self.qp_max_solve_time_ms,
             ),
             dtype=np.float64,
         )
@@ -129,8 +132,6 @@ class CartesianControlConfig:
         )
         if not np.all(np.isfinite(wrist_positive)) or np.any(wrist_positive <= 0.0):
             raise ValueError("wrist and gripper control limits must be finite and positive")
-        if self.ik_max_iterations <= 0:
-            raise ValueError("ik_max_iterations must be positive")
         if self.feedback_fault_max_consecutive <= 0:
             raise ValueError("feedback_fault_max_consecutive must be positive")
         if not 0.0 <= self.grip_release_threshold < self.grip_press_threshold <= 1.0:
@@ -182,7 +183,7 @@ class CartesianControlStatus:
     feedback_abort_requested: bool = False
 
 
-class SplitArmWristController:
+class FullBodyQPIKController:
     """Closed-loop B601 Cartesian controller used by the real-robot runner."""
 
     def __init__(
@@ -219,30 +220,41 @@ class SplitArmWristController:
             self.upper_limit_rad + FEEDBACK_LIMIT_TOLERANCE_RAD,
             FOLLOWER_UPPER_RAD,
         )
-        self.wrist_solver = ClosedFormWristSolver(
-            kinematics,
-            joint_lower=self.lower_limit_rad[3:6],
-            joint_upper=self.upper_limit_rad[3:6],
-        )
-        self.worker = ik_worker or LatestOnlyIKWorker(
-            kinematics,
-            rate_hz=self.config.ik_rate_hz,
-            max_iterations=self.config.ik_max_iterations,
-            tolerance_m=self.config.ik_tolerance_m,
-            damping=self.config.ik_damping,
-            max_solution_jump_rad=self.config.max_solution_jump_rad,
-            lower_limit_rad=self.lower_limit_rad,
-            upper_limit_rad=self.upper_limit_rad,
-        )
+        if ik_worker is not None:
+            self.worker = ik_worker
+        else:
+            qp = FullBodyQPIKSolver(
+                kinematics, solver=self.config.qp_solver,
+                position_cost=self.config.qp_position_cost,
+                orientation_cost=self.config.qp_orientation_cost,
+                damping=self.config.qp_damping,
+                smoothness_cost=self.config.qp_smoothness_cost,
+                posture_cost=self.config.qp_posture_cost,
+                joint_limit_margin_rad=np.deg2rad(self.config.joint_limit_margin_deg),
+                max_solve_time_ms=self.config.qp_max_solve_time_ms,
+            )
+            speed = np.concatenate((np.full(3, self.config.max_joint_speed_rad_s), np.full(3, self.config.wrist_speed_rad_s or self.config.max_joint_speed_rad_s)))
+            acceleration = np.concatenate((np.full(3, self.config.max_joint_acceleration_rad_s2), np.full(3, self.config.wrist_acceleration_rad_s2 or self.config.max_joint_acceleration_rad_s2)))
+            self.worker = LatestOnlyQPIKWorker(qp, max_joint_speed_rad_s=speed, max_joint_acceleration_rad_s2=acceleration)
 
         self._generation = 0
         self._sequence = 0
         self._last_submitted_sample: tuple[int, int, int] | None = None
+        self._last_submitted_sequence = 0
+        self._last_submitted_sample_id: int | None = None
+        self._last_qp_submission_ns: int | None = None
         self._last_consumed_sequence = 0
         self._last_state = TeleopState.WAITING
         self._q_goal_rad: np.ndarray | None = None
+        self._qp_nominal_rad: np.ndarray | None = None
         self._q_command_rad: np.ndarray | None = None
         self._dq_command_rad_s: np.ndarray | None = None
+        # QP smoothness uses the last successful QP velocity. Keep this
+        # separate from the outer command-shaper velocity, which may be
+        # clamped or reset by feedback binding.
+        self._dq_qp_rad_s = np.zeros(6, dtype=np.float64)
+        self._last_qp_request_actual_rad: np.ndarray | None = None
+        self._last_qp_request_dt_s: float | None = None
         self._gripper_goal_deg = 0.0
         self._gripper_command_deg = 0.0
         self._gripper_velocity_deg_s = 0.0
@@ -305,6 +317,7 @@ class SplitArmWristController:
         )
         if self._q_command_rad is None:
             self._q_goal_rad = q_control_actual_rad.copy()
+            self._qp_nominal_rad = q_control_actual_rad.copy()
             self._q_command_rad = q_control_actual_rad.copy()
             self._dq_command_rad_s = np.zeros(6, dtype=np.float64)
             self._gripper_goal_deg = gripper_actual_deg
@@ -314,8 +327,10 @@ class SplitArmWristController:
             self.mapper.reset(require_release=True)
             self._begin_generation()
             self._q_goal_rad = q_control_actual_rad.copy()
+            self._qp_nominal_rad = q_control_actual_rad.copy()
             self._q_command_rad = q_control_actual_rad.copy()
             self._dq_command_rad_s.fill(0.0)
+            self._dq_qp_rad_s.fill(0.0)
             self._gripper_goal_deg = gripper_actual_deg
             self._gripper_command_deg = gripper_actual_deg
             self._gripper_velocity_deg_s = 0.0
@@ -330,13 +345,10 @@ class SplitArmWristController:
         assert self._q_goal_rad is not None
         assert self._q_command_rad is not None
         assert self._dq_command_rad_s is not None
+        # Normalize dt before it is captured in an asynchronous QP request.
+        dt_s = float(np.clip(dt_s, 1e-6, 0.05))
 
-        wrist_position = self.kinematics.wrist_center_position(
-            q_control_actual_rad
-        )
-        _, ee_rotation = self.kinematics.forward_kinematics(
-            q_control_actual_rad
-        )
+        tcp_position, ee_rotation = self.kinematics.forward_kinematics(q_control_actual_rad)
         now_value_ns = time.monotonic_ns() if now_ns is None else int(now_ns)
         sample_fresh = self._sample_is_fresh(frame, now_value_ns)
         primary_button = bool(
@@ -355,11 +367,8 @@ class SplitArmWristController:
         return_requested = home_requested or zero_requested
         if return_requested:
             self.mapper.reset(require_release=True)
-        # Translation controls the joint4 origin (the end of q1-q3), while
-        # rotation controls gripper_end. Keeping these references separate
-        # prevents wrist/tool rotation from creating artificial arm translation.
         mapping = self.mapper.update(
-            frame, wrist_position, ee_rotation, now_ns=now_ns
+            frame, tcp_position, ee_rotation, now_ns=now_ns
         )
 
         if mapping.state != self._last_state:
@@ -369,10 +378,18 @@ class SplitArmWristController:
                 self._begin_generation()
             if mapping.state is TeleopState.ACTIVE:
                 self._q_goal_rad = q_control_actual_rad.copy()
+                # A Grip session starts from the measured posture. Synchronize
+                # the shaped command and clear velocity so activation cannot
+                # inherit motion from the previous IDLE/home command.
+                self._qp_nominal_rad = q_control_actual_rad.copy()
+                self._q_command_rad = q_control_actual_rad.copy()
+                self._dq_command_rad_s.fill(0.0)
+                self._dq_qp_rad_s.fill(0.0)
             else:
                 self._q_goal_rad = q_control_actual_rad.copy()
                 self._q_command_rad = q_control_actual_rad.copy()
                 self._dq_command_rad_s.fill(0.0)
+                self._dq_qp_rad_s.fill(0.0)
                 self._last_wrist_violation_rad = 0.0
                 if mapping.state in (TeleopState.WAITING, TeleopState.STALE):
                     self._gripper_goal_deg = gripper_actual_deg
@@ -386,49 +403,60 @@ class SplitArmWristController:
             self._q_goal_rad = target.copy()
             self._last_wrist_violation_rad = 0.0
 
+        # Consume a completed result before deciding whether the next request
+        # is still in flight. This permits one new QP request per fresh sample.
+        self._consume_latest_result(mapping.state)
+
         if mapping.state is TeleopState.ACTIVE and mapping.target is not None:
             sample_key = self._sample_key(frame)
-            if sample_key is not None and sample_key != self._last_submitted_sample:
-                wrist_target, wrist_violation = self.wrist_solver.solve(
-                    self._q_goal_rad[:3],
-                    mapping.target.rotation,
-                    previous_q4_rad=float(self._q_goal_rad[3]),
-                )
-                self._last_wrist_violation_rad = wrist_violation
+            request_in_flight = (
+                self._last_submitted_sequence > self._last_consumed_sequence
+            )
+            if (
+                sample_key is not None
+                and sample_key != self._last_submitted_sample
+                and not request_in_flight
+                and not mapping.reference_captured
+            ):
                 seed = self._q_goal_rad.copy()
-                seed[3:6] = wrist_target
+                qp_dt_s = dt_s
+                if self._last_qp_submission_ns is not None:
+                    qp_dt_s = float(
+                        np.clip(
+                            (now_value_ns - self._last_qp_submission_ns) * 1e-9,
+                            1e-6,
+                            0.05,
+                        )
+                    )
                 self._sequence += 1
+                self._last_qp_request_actual_rad = q_control_actual_rad.copy()
+                self._last_qp_request_dt_s = qp_dt_s
                 self.worker.submit(
                     IKRequest(
                         generation=self._generation,
                         sequence=self._sequence,
                         sample_id=mapping.target.sample_id,
                         target_position=mapping.target.position,
+                        target_rotation=mapping.target.rotation,
                         q_seed=seed,
+                        q_actual=q_control_actual_rad,
+                        dq_previous=self._dq_qp_rad_s.copy(),
+                        dt=qp_dt_s,
+                        q_nominal=(
+                            q_control_actual_rad
+                            if self._qp_nominal_rad is None
+                            else self._qp_nominal_rad
+                        ),
                         submitted_monotonic_ns=now_value_ns,
                     )
                 )
                 self._last_submitted_sample = sample_key
-
-        result = self.worker.latest_result()
-        if result is not None and result.sequence > self._last_consumed_sequence:
-            self._last_consumed_sequence = result.sequence
-            if (
-                result.generation == self._generation
-                and mapping.state is TeleopState.ACTIVE
-            ):
-                self._last_ik_result = result
-                candidate = np.asarray(result.q_target_rad, dtype=np.float64)
-                if candidate.shape == (6,) and np.all(np.isfinite(candidate)):
-                    # The wrist target belongs to this VR sample and remains
-                    # valid even when position-only q1-q3 IK did not converge.
-                    self._q_goal_rad[3:6] = np.clip(
-                        candidate[3:6], self.lower_limit_rad[3:6], self.upper_limit_rad[3:6]
-                    )
-                    if result.success:
-                        self._q_goal_rad[:3] = np.clip(
-                            candidate[:3], self.lower_limit_rad[:3], self.upper_limit_rad[:3]
-                        )
+                self._last_submitted_sequence = self._sequence
+                self._last_submitted_sample_id = mapping.target.sample_id
+                self._last_qp_submission_ns = now_value_ns
+                # Immediate/test workers can finish synchronously. Consume
+                # that result as well without delaying the visible status.
+                self._consume_latest_result(mapping.state)
 
         trigger = self._trigger(frame)
         tracking_fresh = mapping.state in (TeleopState.IDLE, TeleopState.ACTIVE)
@@ -438,7 +466,6 @@ class SplitArmWristController:
                 + trigger * (self.config.gripper_closed_deg - self.config.gripper_open_deg)
             )
 
-        dt_s = float(np.clip(dt_s, 1e-6, 0.05))
         previous_q_command_rad = self._q_command_rad.copy()
         wrist_speed = (
             self.config.max_joint_speed_rad_s
@@ -616,6 +643,7 @@ class SplitArmWristController:
                 self._q_goal_rad = self._q_command_rad.copy()
                 assert self._dq_command_rad_s is not None
                 self._dq_command_rad_s.fill(0.0)
+                self._dq_qp_rad_s.fill(0.0)
                 self._gripper_goal_deg = self._gripper_command_deg
                 self._gripper_velocity_deg_s = 0.0
 
@@ -687,7 +715,40 @@ class SplitArmWristController:
         self._generation += 1
         self.worker.clear()
         self._last_submitted_sample = None
+        self._last_submitted_sequence = 0
+        self._last_submitted_sample_id = None
+        self._last_qp_submission_ns = None
         self._last_ik_result = None
+        self._last_qp_request_actual_rad = None
+        self._last_qp_request_dt_s = None
+        self._dq_qp_rad_s.fill(0.0)
+
+    def _consume_latest_result(self, state: TeleopState) -> None:
+        result = self.worker.latest_result()
+        if result is None or result.sequence <= self._last_consumed_sequence:
+            return
+        self._last_consumed_sequence = result.sequence
+        if (
+            result.generation != self._generation
+            or state is not TeleopState.ACTIVE
+            or result.sequence != self._last_submitted_sequence
+            or result.sample_id != self._last_submitted_sample_id
+            or result.solve_time_ms > self.config.qp_max_solve_time_ms
+        ):
+            return
+        self._last_ik_result = result
+        candidate = np.asarray(result.q_target_rad, dtype=np.float64)
+        if candidate.shape != (6,) or not np.all(np.isfinite(candidate)):
+            return
+        if not result.success:
+            # A failed QP keeps the complete previous six-axis goal.
+            return
+        candidate = np.clip(candidate, self.lower_limit_rad, self.upper_limit_rad)
+        self._q_goal_rad = candidate
+        if self._last_qp_request_actual_rad is not None and self._last_qp_request_dt_s is not None:
+            self._dq_qp_rad_s = (
+                candidate - self._last_qp_request_actual_rad
+            ) / self._last_qp_request_dt_s
 
     def _sample_is_fresh(
         self, sample: ControllerSample | VRFrame | None, now_ns: int
