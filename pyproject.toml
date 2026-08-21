@@ -36,8 +36,5 @@ where = ["src"]
 [tool.setuptools.package-data]
 lerobot_teleoperator_rebot_vr = ["assets/*.urdf"]
 
-[tool.setuptools.data-files]
-"share/doc/lerobot_teleoperator_rebot_vr" = ["docs/CONTROL_DESIGN.md"]
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
