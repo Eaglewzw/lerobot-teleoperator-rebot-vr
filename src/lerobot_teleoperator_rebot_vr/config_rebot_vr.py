@@ -41,10 +41,10 @@ class RebotVRConfig:
 
     position_scale: float = 1.0
     orientation_scale: float = 1.0
-    position_filter_hz: float = 8.0
-    orientation_filter_hz: float = 6.0
-    position_deadband_m: float = 5e-4
-    orientation_deadband_rad: float = float(np.deg2rad(0.25))
+    position_filter_hz: float = 0.0
+    orientation_filter_hz: float = 0.0
+    position_deadband_m: float = 0.0
+    orientation_deadband_rad: float = 0.0
     qp_solver: str = "scipy"
     ik_mode: str = "pose"
     qp_position_cost: float = 20.0
@@ -61,8 +61,10 @@ class RebotVRConfig:
     singularity_characteristic_length_m: float = 0.3
     joint_limit_margin_deg: float = 2.0
     qp_max_solve_time_ms: float = 8.0
-    max_joint_speed_rad_s: float = 2.0
-    max_joint_acceleration_rad_s2: float = 8.0
+    max_joint_speed_rad_s: float = 5.5
+    max_joint_acceleration_rad_s2: float = 20.0
+    wrist_speed_rad_s: float = 12.0
+    wrist_acceleration_rad_s2: float = 60.0
     arm_command_lookahead_s: float = 0.05
     wrist_command_lookahead_s: float = 0.025
     feedback_fault_max_consecutive: int = 5
@@ -140,6 +142,8 @@ class RebotVRConfig:
             (
                 self.max_joint_speed_rad_s,
                 self.max_joint_acceleration_rad_s2,
+                self.wrist_speed_rad_s,
+                self.wrist_acceleration_rad_s2,
                 self.gripper_max_speed_deg_s,
                 self.gripper_max_acceleration_deg_s2,
                 self.qp_position_cost,

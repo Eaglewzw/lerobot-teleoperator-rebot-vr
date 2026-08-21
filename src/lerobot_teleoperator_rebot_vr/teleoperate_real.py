@@ -17,6 +17,7 @@ from .cartesian_controller import (
     vr_frame_from_raw_action,
 )
 from .config_rebot_vr import DEFAULT_BASE_T_ANCHOR, RebotVRConfig
+from .csv_logger import CSVLogger, build_csv_row
 from .kinematics import B601Kinematics
 from .teleop_cli import (
     build_parser as _parser,
@@ -196,6 +197,9 @@ def main() -> None:
         )
     else:
         print("Initial-pose motion is disabled; VR control will start from actual feedback.")
+    csv_logger = CSVLogger(args.csv_log) if args.csv_log is not None else None
+    if csv_logger is not None:
+        print(f"CSV logging enabled: {csv_logger.output_path}", flush=True)
     try:
         vr_controller.connect()
         vr_connected = True
@@ -243,6 +247,12 @@ def main() -> None:
                 else vr_frame_from_raw_action(vr_controller.get_action())
             )
             action, status = arm_controller.update(frame, observation, dt_s)
+            status = replace(
+                status,
+                control_loop_hz=(None if dt_s <= 0.0 else 1.0 / dt_s),
+            )
+            if csv_logger is not None:
+                csv_logger.write_row(build_csv_row(status))
             send_started_s = time.perf_counter()
             if action is None:
                 sent_action = None
@@ -255,7 +265,6 @@ def main() -> None:
                 send_action_ms = (time.perf_counter() - send_started_s) * 1e3
             status = replace(
                 status,
-                control_loop_hz=(None if dt_s <= 0.0 else 1.0 / dt_s),
                 feedback_read_ms=feedback_read_ms,
                 send_action_ms=send_action_ms,
                 cycle_work_ms=(time.monotonic() - loop_started_s) * 1e3,
@@ -285,25 +294,32 @@ def main() -> None:
                 time.sleep(sleep_s)
     finally:
         try:
-            if arm_started:
-                arm_controller.stop()
-        finally:
             try:
-                if vr_connected:
-                    vr_controller.disconnect()
+                if arm_started:
+                    arm_controller.stop()
             finally:
                 try:
-                    if robot_connected or robot.is_connected:
-                        if preserve_torque_for_feedback_fault:
-                            print(
-                                "Persistent feedback fault: retaining motor torque at the "
-                                "last HOLD command; support the arm before disabling power.",
-                                flush=True,
-                            )
-                            robot.config.disable_torque_on_disconnect = False
-                        robot.disconnect()
+                    if vr_connected:
+                        vr_controller.disconnect()
                 finally:
-                    kinematics.close()
+                    try:
+                        if robot_connected or robot.is_connected:
+                            if preserve_torque_for_feedback_fault:
+                                print(
+                                    "Persistent feedback fault: retaining motor torque at the "
+                                    "last HOLD command; support the arm before disabling power.",
+                                    flush=True,
+                                )
+                                robot.config.disable_torque_on_disconnect = False
+                            robot.disconnect()
+                    finally:
+                        kinematics.close()
+        finally:
+            if csv_logger is not None:
+                try:
+                    csv_logger.close()
+                except RuntimeError:
+                    logger.exception("failed to finalize CSV log")
 
 
 if __name__ == "__main__":

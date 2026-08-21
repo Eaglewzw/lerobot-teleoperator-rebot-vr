@@ -121,6 +121,8 @@ class RebotVRTeleop(Teleoperator):
                 stale_timeout_s=self.config.stale_timeout,
                 max_joint_speed_rad_s=self.config.max_joint_speed_rad_s,
                 max_joint_acceleration_rad_s2=self.config.max_joint_acceleration_rad_s2,
+                wrist_speed_rad_s=self.config.wrist_speed_rad_s,
+                wrist_acceleration_rad_s2=self.config.wrist_acceleration_rad_s2,
                 arm_command_lookahead_s=self.config.arm_command_lookahead_s,
                 wrist_command_lookahead_s=self.config.wrist_command_lookahead_s,
                 feedback_fault_max_consecutive=(

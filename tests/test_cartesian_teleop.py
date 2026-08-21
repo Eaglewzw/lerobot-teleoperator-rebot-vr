@@ -709,7 +709,12 @@ def test_adaptive_qp_cli_defaults_modes_and_validation() -> None:
         assert option in help_text
 
     defaults = parser.parse_args([])
+    assert defaults.backend == "xrobotoolkit_v1"
+    assert defaults.qp_solver == "scipy"
     assert defaults.ik_mode == "pose"
+    assert defaults.position_scale == pytest.approx(1.0)
+    assert defaults.orientation_scale == pytest.approx(1.0)
+    assert defaults.qp_position_cost == pytest.approx(20.0)
     assert defaults.qp_damping == pytest.approx(1e-3)
     assert defaults.qp_damping_max == pytest.approx(0.1)
     assert defaults.qp_orientation_cost == pytest.approx(2.0)
@@ -721,6 +726,11 @@ def test_adaptive_qp_cli_defaults_modes_and_validation() -> None:
     assert defaults.qp_orientation_gain == pytest.approx(8.0)
     assert defaults.arm_command_lookahead_ms == pytest.approx(50.0)
     assert defaults.wrist_command_lookahead_ms == pytest.approx(25.0)
+    assert defaults.max_joint_speed_rad_s == pytest.approx(5.5)
+    assert defaults.max_joint_acceleration_rad_s2 == pytest.approx(20.0)
+    assert defaults.max_relative_target_deg == pytest.approx(20.0)
+    assert defaults.fps == pytest.approx(70.0)
+    assert defaults.status_rate == pytest.approx(5.0)
     _validate_args(defaults)
 
     position = parser.parse_args(["--ik-mode", "position"])

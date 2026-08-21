@@ -48,10 +48,10 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
     mapping = parser.add_argument_group("Cartesian mapping")
     mapping.add_argument("--position-scale", type=float, default=1.0)
     mapping.add_argument("--orientation-scale", type=float, default=1.0)
-    mapping.add_argument("--position-filter-hz", type=float, default=8.0)
-    mapping.add_argument("--orientation-filter-hz", type=float, default=6.0)
-    mapping.add_argument("--position-deadband-m", type=float, default=5e-4)
-    mapping.add_argument("--orientation-deadband-deg", type=float, default=0.25)
+    mapping.add_argument("--position-filter-hz", type=float, default=0.0)
+    mapping.add_argument("--orientation-filter-hz", type=float, default=0.0)
+    mapping.add_argument("--position-deadband-m", type=float, default=0.0)
+    mapping.add_argument("--orientation-deadband-deg", type=float, default=0.0)
 
     ik = parser.add_argument_group("IK and safety")
     ik.add_argument("--qp-solver", choices=("scipy", "osqp"), default="scipy")
@@ -86,7 +86,7 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
     )
     ik.add_argument("--qp-damping-max", type=float, default=0.1)
     ik.add_argument("--qp-smoothness-cost", type=float, default=0.05)
-    ik.add_argument("--qp-posture-cost", type=float, default=0.01)
+    ik.add_argument("--qp-posture-cost", type=float, default=0.05)
     ik.add_argument(
         "--singularity-threshold",
         type=float,
@@ -134,9 +134,16 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
     ik.add_argument("--gripper-closed-deg", type=float, default=0.0)
 
     runtime = parser.add_argument_group("runtime")
-    runtime.add_argument("--fps", type=float, default=60.0)
+    runtime.add_argument("--fps", type=float, default=70.0)
     runtime.add_argument("--duration", type=float, default=0.0, help="0 runs until Ctrl-C")
-    runtime.add_argument("--status-rate", type=float, default=1.0)
+    runtime.add_argument("--status-rate", type=float, default=5.0)
+    runtime.add_argument(
+        "--csv-log",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="write per-frame joint and IK diagnostics to PATH (default: disabled)",
+    )
     runtime.add_argument("--log-level", choices=("DEBUG", "INFO", "WARNING"), default="INFO")
     return parser
 
