@@ -6,11 +6,11 @@
 
 面向 [LeRobot](https://github.com/huggingface/lerobot) 0.6.x 与 Seeed Studio reBot B601-DM（达妙电机）的 PICO 4 手柄**笛卡尔遥操作**插件。
 
-- **自适应 6-DoF QP IK** —— 默认以 `gripper_end` 帧跟踪完整位姿；随归一化 `sigma_min` 下降连续增大阻尼并降低姿态权重，可切换纯位置模式
-- **离合式激活** —— Grip 按住激活、松开立即冻结；启动、跟踪恢复或回位指令后须先完全松开 Grip 方可再次激活
-- **latest-only 线程模型** —— TCP 接收、QP IK 工作线程与主控制循环互不阻塞，仅消费最新样本与最新 IK 结果
-- **分层安全钳制** —— 关节限位、QP/整形器速度加速度约束、命令-反馈窗口、follower 相对目标；反馈异常进入 HOLD 冻结，连续故障受控退出并保留扭矩
-- **CSV 记录与桌面分析** —— `--csv-log` 逐帧异步记录，`rebot-vr-csv-analyze` 本地可视化
+- **自适应 6-DoF QP IK** —— TCP 位姿跟随手柄；接近奇异时自动增大阻尼、降低姿态权重，避免求解失败，也可切换纯位置模式
+- **离合式激活** —— 按住 Grip 激活，松开即冻结；启动或中断后须先完全松开一次再激活，防止机械臂突跳
+- **latest-only 线程模型** —— VR 接收、QP IK、主控制循环各一个线程，只消费最新数据，互不阻塞
+- **分层安全保护** —— 速度/加速度整形、关节限位、相对目标钳制；反馈异常进入 HOLD 冻结，连续故障受控退出并保持扭矩
+- **CSV 记录与分析** —— `--csv-log` 逐帧写入关节与 IK 诊断，`rebot-vr-csv-analyze` 本地绘图分析
 
 ## 要求
 
@@ -36,7 +36,22 @@
 
 ```bash
 source /path/to/lerobot/.venv/bin/activate
-pip install -e .          # 可编辑安装；亦可用 uv pip install -e .
+
+# 在本包根目录下执行（即 pyproject.toml 所在目录）
+pip install -e .  
+
+# 验证包已安装
+pip show lerobot_teleoperator_rebot_vr
+
+# 验证 LeRobot 能发现插件
+python -c "
+from lerobot_teleoperator_rebot_vr.config_rebot_vr import RebotVRTeleopConfig
+print('插件注册名:', RebotVRTeleopConfig.plugin_name)
+print('安装成功')
+"
+
+# 验证命令行工具可用
+rebot-vr-teleoperate --help
 ```
 
 ## 快速开始
@@ -61,7 +76,7 @@ rebot-vr-teleoperate --robot-port /dev/ttyACM0 --backend xrobotoolkit_v1
 
 | 阶段 | 目的 | 参数 |
 |---|---|---|
-| 1 | 仅位置（不跟踪姿态） | `--ik-mode position --position-scale 0.2` |
+| 1 | 仅位置（不跟踪姿态） | `--ik-mode position --position-scale 1.0` |
 | 2 | 仅姿态 | `--position-scale 0 --orientation-scale 1.0` |
 | 3 | 完整映射 | `--position-scale 1.0 --orientation-scale 1.0` |
 
@@ -80,11 +95,9 @@ rebot-vr-csv-analyze logs/session.csv
 | 控制 | 行为 |
 |---|---|
 | Grip | 按住激活遥操，松开冻结并保持当前姿态 |
-| Trigger | 夹爪开合：`0` → `--gripper-open-deg`，`1` → `--gripper-closed-deg`|
-| A / X | 平滑返回 `--initial-q` 起始姿态 |
-| B / Y | 平滑返回六轴零点并闭合夹爪；Trigger 相对按下时刻移动 ≥ 0.05 后恢复开合控制 |
-
-A/X 与 B/Y 仅 `xrobotoolkit_v1` 后端提供；位姿映射当前固定右手控制器（`--hand left` 不可用）。回位指令及任何状态重置后，须先完全松开 Grip 才能再次激活。
+| Trigger | 夹爪开合：`0` → `open`，`1` → `closed`|
+| A / X | 返回 `--initial-q` 起始姿态 |
+| B / Y | 返回六轴零点并闭合夹爪 |
 
 `--gripper-open-deg`（默认 −180）与 `--gripper-closed-deg`（默认 0）是 Trigger 映射的两个端点，CLI 强制校验 `-270 ≤ open < closed ≤ 0`。移动到起始姿态期间夹爪保持实际反馈位置；进入 VR 主循环并取得新鲜 Tracking 后才应用 Trigger 映射。绕过 VR 直接验证夹爪标定时使用独立命令：
 
@@ -97,12 +110,7 @@ rebot-gripper-test --robot-port /dev/ttyACM0 --target-deg -100 \
 rebot-gripper-test --robot-port /dev/ttyACM0 --target-deg 0
 ```
 
-该工具不读取 PICO、Trigger 或 Grip；`--target-deg` 为电机角度，范围 `[−270, 0]`（−270 张开，0 闭合）。默认退出后保留电机扭矩以避免机械臂失去支撑；确认已支撑机械臂后才使用 `--disable-torque-on-disconnect`。
 
-
-## LeRobot 插件集成
-
-包名符合 `lerobot_teleoperator_*` 约定，导入即把 `rebot_vr` 注册进 LeRobot 的遥操器 registry。LeRobot 0.6 的通用 `teleoperate/record` 循环不向 teleoperator 提供机器人反馈，而本插件的 `get_action()` 在缺少新鲜反馈时直接抛出 `RuntimeError`（fail-closed），不退化为开环控制。实机一律使用 `rebot-vr-teleoperate`。
 
 ## 文档
 
