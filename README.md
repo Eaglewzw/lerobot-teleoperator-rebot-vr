@@ -68,6 +68,29 @@ rebot-vr-teleoperate --robot-port /dev/ttyACM0 --backend xrobotoolkit_v1
 | 2 | 仅姿态 | `--position-scale 0 --orientation-scale 0.3 --max-joint-speed-rad-s 0.1` |
 | 3 | 完整映射 | `--position-scale 1.0 --orientation-scale 1.0 --max-joint-speed-rad-s 0.4` |
 
+### 4. CSV 桌面分析
+
+遥操进程逐帧记录电机反馈、QP 目标、最终命令和 IK 诊断：
+
+```bash
+rebot-vr-teleoperate \
+  --robot-port /dev/ttyACM0 \
+  --backend xrobotoolkit_v1 \
+  --csv-log logs/session.csv
+```
+
+实验结束后启动本地桌面分析器（不启动 Web 服务、不使用浏览器）：
+
+```bash
+rebot-vr-csv-analyze logs/session.csv
+```
+
+分析器可任意选择并叠加七轴 `actual/target/command`、actual-command/actual-target
+误差、TCP 位置/姿态误差、`sigma_min`、condition number、QP 求解耗时和 `dq` 范数。
+鼠标框选或滚轮可放大时间段，中键拖动可平移，十字光标可查看具体帧；底部表格显示
+当前窗口内每条曲线的 min/max/mean/RMS、最大绝对值及其发生时刻。不同单位的曲线可启用
+“逐曲线归一化”后比较变化趋势。
+
 ## 手柄按键
 
 | 控制 | 行为 |
@@ -114,7 +137,7 @@ rebot-gripper-test --robot-port /dev/ttyACM0 --target-deg 0
 | `--gripper-max-speed-deg-s` | `1200` | **1200** | 夹爪速度上限（°/s） |
 | `--gripper-max-acceleration-deg-s2` | `5000` | 推荐 ≤50000 | 夹爪加速度上限（°/s²） |
 | `--gripper-torque-ratio` | `0.2` | `1.0` | 夹爪最大夹持力比例 |
-| `--fps` | `60` |  ≤120 | 主循环频率 |
+| `--fps` | `70` |  ≤120 | 主循环频率 |
 | `--qp-solver` | `scipy` | `scipy/osqp` | QP 后端；OSQP 需安装 `.[qp]` |
 | `--ik-mode` | `pose` | `pose/position` | 完整位姿或纯 XYZ 任务 |
 | `--qp-position-cost` | `20` | — | TCP 位置任务权重（高于姿态） |
@@ -130,9 +153,10 @@ rebot-gripper-test --robot-port /dev/ttyACM0 --target-deg 0
 | `--singularity-critical-threshold` | `0.02` | — | 达到最大保护的归一化 `sigma_min` |
 | `--singularity-characteristic-length-m` | `0.3` | — | 6D Jacobian 线速度行的尺度归一化长度 |
 | `--qp-smoothness-cost` | `0.05` | — | 速度连续性正则 |
-| `--qp-posture-cost` | `0.01` | — | 回归 nominal 姿态正则 |
+| `--qp-posture-cost` | `0.05` | — | 回归 nominal 姿态正则 |
 | `--joint-limit-margin-deg` | `2` | — | QP 关节限位内缩余量 |
 | `--qp-max-solve-time-ms` | `8` | — | 单次 QP 时间预算 |
+| `--csv-log` | 不记录 | — | 逐帧异步写入关节状态和 IK 诊断 CSV |
 
 > [!IMPORTANT]
 > 上表最大值为**实机验证的安全上限**；电机硬件空载上限见[最大速度与加速度](#最大速度与加速度)。CLI 不强制校验最大值，超出后电机物理上无法达到。
@@ -231,7 +255,6 @@ PICO 手柄位姿（XRoboToolkit V1 TCP / Isaac CloudXR）
 
 - [控制设计](docs/CONTROL_DESIGN.md) —— 线程模型、坐标映射、安全状态与反馈故障处理
 - [逆解设计](docs/INVERSE_KINEMATICS_DESIGN.md) —— 从 VR 样本到六轴命令的完整推导
-- [QP 轨迹验证报告](docs/vr_wrist_test/TEST_REPORT.md) —— 全六轴 TCP QP 离线指标
 
 ## 许可证
 
