@@ -229,7 +229,7 @@ PICO 手柄位姿（XRoboToolkit V1 TCP / Isaac CloudXR）
 | `STALE` | 样本超时或断连：保持当前位置，要求重新释放 Grip |
 | `HOLD` | 反馈缺失/非有限/超限：冻结最后有效命令；连续 5 帧后受控退出并保留扭矩 |
 
-设计细节见 [CONTROL_DESIGN.md](docs/CONTROL_DESIGN.md) 与 [INVERSE_KINEMATICS_DESIGN.md](docs/INVERSE_KINEMATICS_DESIGN.md)。
+设计细节见 [CONTROL_DESIGN.md](assest/docs/CONTROL_DESIGN.md) 与 [INVERSE_KINEMATICS_DESIGN.md](assest/docs/INVERSE_KINEMATICS_DESIGN.md)。
 
 ## LeRobot 插件集成
 
@@ -253,8 +253,8 @@ PICO 手柄位姿（XRoboToolkit V1 TCP / Isaac CloudXR）
 
 ## 文档
 
-- [控制设计](docs/CONTROL_DESIGN.md) —— 线程模型、坐标映射、安全状态与反馈故障处理
-- [逆解设计](docs/INVERSE_KINEMATICS_DESIGN.md) —— 从 VR 样本到六轴命令的完整推导
+- [控制设计](assest/docs/CONTROL_DESIGN.md) —— 线程模型、坐标映射、安全状态与反馈故障处理
+- [逆解设计](assest/docs/INVERSE_KINEMATICS_DESIGN.md) —— 从 VR 样本到六轴命令的完整推导
 
 ## 许可证
 
