@@ -15,18 +15,18 @@ try:
 except ImportError:  # LeRobot 0.6.0/0.6.1 compatibility
     from lerobot.types import RobotAction
 
-from .cartesian_controller import (
-    CartesianControlConfig,
+from .control.controller import (
     FullBodyQPIKController,
-    vr_frame_from_raw_action,
 )
 from .config_rebot_vr import (
     DEFAULT_BASE_T_ANCHOR,
     REBOT_JOINTS,
     RebotVRTeleopConfig,
 )
-from .kinematics import B601Kinematics
-from .vr_controller import VRController, make_vr_controller
+from .control.types import CartesianControlConfig
+from .ik.kinematics import B601Kinematics
+from .vr.adapter import vr_frame_from_raw_action
+from .vr.controller import VRController, make_vr_controller
 
 
 logger = logging.getLogger(__name__)

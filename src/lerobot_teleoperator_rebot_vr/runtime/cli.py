@@ -7,8 +7,8 @@ from pathlib import Path
 
 import numpy as np
 
-from .cartesian_controller import CartesianControlStatus, GRIPPER_NAME
-from .startup_pose import DEFAULT_INITIAL_Q_REFERENCE_RAD
+from ..control.startup import DEFAULT_INITIAL_Q_REFERENCE_RAD
+from ..control.types import CartesianControlStatus, GRIPPER_NAME
 
 
 def build_parser(description: str | None = None) -> argparse.ArgumentParser:
@@ -42,8 +42,8 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
     vr.add_argument("--port", type=int, default=63901)
     vr.add_argument("--no-cloudxr-launch", action="store_true")
     vr.add_argument("--stale-timeout", type=float, default=0.2)
-    vr.add_argument("--grip-press", type=float, default=0.85)
-    vr.add_argument("--grip-release", type=float, default=0.75)
+    vr.add_argument("--grip-press", type=float, default=0.60)
+    vr.add_argument("--grip-release", type=float, default=0.40)
 
     mapping = parser.add_argument_group("Cartesian mapping")
     mapping.add_argument("--position-scale", type=float, default=1.0)

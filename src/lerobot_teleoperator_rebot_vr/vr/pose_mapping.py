@@ -9,7 +9,7 @@ from enum import Enum
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from .processor import VRFrame
+from .models import VRFrame
 from .tracking import ControllerSample, normalize_controller_side
 
 

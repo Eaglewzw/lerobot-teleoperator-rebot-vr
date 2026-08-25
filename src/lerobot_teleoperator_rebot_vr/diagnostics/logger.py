@@ -12,7 +12,7 @@ from typing import TextIO
 
 import numpy as np
 
-from .cartesian_controller import (
+from ..control.types import (
     ARM_JOINT_NAMES,
     GRIPPER_NAME,
     CartesianControlStatus,

@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 import numpy.typing as npt
 
-from .csv_logger import JOINT_NAMES
+from .logger import JOINT_NAMES
 
 
 KINDS = ("actual", "target", "command")

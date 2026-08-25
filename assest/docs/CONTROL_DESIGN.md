@@ -98,6 +98,29 @@ QP 结果携带 `sigma_min`、condition number、当前 damping/orientation weig
 结果年龄、实测循环 Hz、Tracking 样本年龄以及反馈读取/命令发送/整帧工作耗时，不在
 60 Hz 控制路径逐帧打印。
 
+代码职责与运行线程是两个不同层次。模块拆分如下：
+
+```text
+control/controller.py    单周期状态机编排、六轴命令与 action 合成
+control/types.py         公共配置、状态和关节名称/限位常量
+control/gripper.py       Trigger 重新接管、夹爪目标和单轴命令整形
+control/feedback.py      反馈字段解析、有限值与反馈限位诊断
+control/arm_command.py   ACTIVE 前视/非 ACTIVE 整形与反馈窗口约束
+control/status.py        正常控制周期的状态和 IK 诊断快照组装
+ik/coordination.py       generation、latest-only 请求、速度前馈和结果验收
+ik/kinematics.py         Pinocchio FK/Jacobian 与 QP 数值求解
+ik/async_worker.py       latest-only worker 线程与不可变请求/结果
+vr/adapter.py            原始 VR action 到不可变 VRFrame 的适配
+vr/tracking.py           不可变 Tracking 样本、校验与 latest-only 样本槽
+vr/xr_v1.py              XRoboToolkit V1 TCP 流式解包和接收线程
+runtime/                 实机 CLI、启动过程和反馈故障退出路径
+diagnostics/             CSV 记录、离线分析和桌面交互查看器
+tools/                   夹爪与 VR 独立诊断命令
+```
+
+这些模块不会创建额外控制线程。`ik/coordination.py` 只由主线程调用，真正的异步求解仍
+只发生在 `ik/async_worker.py` 的单个 worker 中；夹爪和反馈模块也都是主线程内的确定性逻辑。
+
 ## 安全层
 
 QP 约束保证 ACTIVE 算法输出的速度与加速度可执行；外层仍执行最终有限值检查、软件

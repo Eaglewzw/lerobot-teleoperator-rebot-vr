@@ -113,7 +113,7 @@ def test_real_runner_uses_pos_vel_for_arm_control() -> None:
         __import__("pathlib")
         .Path(__file__)
         .parents[1]
-        .joinpath("src/lerobot_teleoperator_rebot_vr/teleoperate_real.py")
+        .joinpath("src/lerobot_teleoperator_rebot_vr/runtime/real.py")
         .read_text()
     )
     assert 'control_mode="pos_vel"' in source

@@ -13,8 +13,8 @@ from typing import Any, Protocol
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from .config_rebot_vr import RebotVRConfig
-from .processor import VRFrame
+from ..config_rebot_vr import RebotVRConfig
+from .models import VRFrame
 from .tracking import ControllerSample
 from .xr_v1 import V1TrackingSource
 

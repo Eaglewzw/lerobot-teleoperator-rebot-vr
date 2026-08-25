@@ -8,8 +8,8 @@ from typing import Callable
 
 import numpy as np
 
-from .cartesian_controller import ARM_JOINT_NAMES, GRIPPER_NAME
-from .startup_pose import StartupPoseMover
+from ..control.startup import StartupPoseMover
+from ..control.types import ARM_JOINT_NAMES, GRIPPER_NAME
 
 logger = logging.getLogger(__name__)
 

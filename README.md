@@ -118,6 +118,11 @@ rebot-gripper-test --robot-port /dev/ttyACM0 --target-deg 0
 - [控制设计](assest/docs/CONTROL_DESIGN.md) —— 线程模型、坐标映射、安全状态与反馈故障处理
 - [逆解设计](assest/docs/INVERSE_KINEMATICS_DESIGN.md) —— 从 VR 样本到六轴命令的完整推导
 
+包源码按领域分为 `control/`、`ik/`、`vr/`、`runtime/`、`diagnostics/` 和 `tools/`。
+控制周期编排位于 `control/controller.py`，Pinocchio/QP 位于 `ik/`，Tracking 与坐标映射
+位于 `vr/`，CSV 记录分析位于 `diagnostics/`。包根目录只保留 LeRobot 插件配置、注册和
+兼容入口；旧的 `cartesian_controller`、`kinematics` 等核心模块导入路径仍可使用。
+
 ## 许可证
 
 [Apache-2.0](LICENSE)
