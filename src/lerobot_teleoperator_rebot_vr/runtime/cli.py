@@ -18,6 +18,12 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
     robot.add_argument("--robot-id", default="rebot_b601_vr")
     robot.add_argument("--can-adapter", choices=("damiao", "socketcan"), default="damiao")
     robot.add_argument("--dm-serial-baud", type=int, default=921600)
+    robot.add_argument(
+        "--motor-control-mode",
+        choices=("pos_vel", "mit"),
+        default="pos_vel",
+        help="q1-q6 motor mode; MIT uses plugin-side velocity and gravity feedforward",
+    )
     robot.add_argument("--gripper-control-mode", choices=("force_pos", "mit"), default="force_pos")
     robot.add_argument("--gripper-torque-ratio", type=float, default=0.2,
                        help="FORCE_POS maximum grip force ratio in [0, 1]")
@@ -114,16 +120,67 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
     ik.add_argument("--wrist-acceleration-rad-s2", type=float, default=60.0, help="q4-q6 acceleration limit (rad/s^2)")
     ik.add_argument("--wrist-relative-target-deg", type=float, default=20.0, help="q4-q6 follower relative target limit (deg)")
     ik.add_argument(
+        "--mit-kp",
+        type=float,
+        nargs=6,
+        default=(60.0, 60.0, 60.0, 12.0, 12.0, 12.0),
+        metavar=("Q1", "Q2", "Q3", "Q4", "Q5", "Q6"),
+        help=(
+            "MIT position gains for q1-q6 "
+            "(default 70 70 70 12 12 12; valid range 0..500)"
+        ),
+    )
+    ik.add_argument(
+        "--mit-kd",
+        type=float,
+        nargs=6,
+        default=(4.0, 4.0, 4.0, 1.0, 1.0, 1.0),
+        metavar=("Q1", "Q2", "Q3", "Q4", "Q5", "Q6"),
+        help="MIT velocity gains for q1-q6 (valid range 0..5)",
+    )
+    ik.add_argument(
+        "--mit-torque-limit-nm",
+        type=float,
+        nargs=6,
+        default=(27.0, 27.0, 27.0, 7.0, 7.0, 7.0),
+        metavar=("Q1", "Q2", "Q3", "Q4", "Q5", "Q6"),
+        help=(
+            "absolute q1-q6 feedforward torque limits in N*m "
+            "(defaults to the dynamics URDF effort limits)"
+        ),
+    )
+    ik.add_argument(
+        "--mit-gravity-scale",
+        type=float,
+        default=1.0,
+        help="gravity feedforward multiplier in [0, 2]",
+    )
+    ik.add_argument(
+        "--mit-gravity-ramp-s",
+        type=float,
+        default=0.0,
+        help=(
+            "time to ramp gravity feedforward after the first MIT command "
+            "(default 0 matches the tuned controller's direct g(q) feedforward)"
+        ),
+    )
+    ik.add_argument(
+        "--mit-dynamics-urdf",
+        type=Path,
+        default=None,
+        help="six-axis inertial URDF; defaults to the packaged B601-DM model",
+    )
+    ik.add_argument(
         "--arm-command-lookahead-ms",
         type=float,
         default=50.0,
-        help="q1-q3 POS_VEL position-command lookahead in milliseconds",
+        help="q1-q3 position-command lookahead in milliseconds",
     )
     ik.add_argument(
         "--wrist-command-lookahead-ms",
         type=float,
         default=25.0,
-        help="q4-q6 POS_VEL position-command lookahead in milliseconds",
+        help="q4-q6 position-command lookahead in milliseconds",
     )
     ik.add_argument("--feedback-fault-max-consecutive", type=int, default=5)
     ik.add_argument("--feedback-fault-settle-time", type=float, default=0.25)
@@ -134,7 +191,7 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
     ik.add_argument("--gripper-closed-deg", type=float, default=0.0)
 
     runtime = parser.add_argument_group("runtime")
-    runtime.add_argument("--fps", type=float, default=70.0)
+    runtime.add_argument("--fps", type=float, default=90.0)
     runtime.add_argument("--duration", type=float, default=0.0, help="0 runs until Ctrl-C")
     runtime.add_argument("--status-rate", type=float, default=5.0)
     runtime.add_argument(
@@ -142,7 +199,10 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
         type=Path,
         default=None,
         metavar="PATH",
-        help="write per-frame joint and IK diagnostics to PATH (default: disabled)",
+        help=(
+            "write per-frame joint, IK, and end-to-end latency diagnostics to "
+            "PATH; also writes *_latency_summary.csv (default: disabled)"
+        ),
     )
     runtime.add_argument("--log-level", choices=("DEBUG", "INFO", "WARNING"), default="INFO")
     return parser
@@ -233,6 +293,44 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("gripper open and closed positions must be finite")
     if not -270.0 <= args.gripper_open_deg < args.gripper_closed_deg <= 0.0:
         raise ValueError("gripper positions must satisfy -270 <= open < closed <= 0 degrees")
+    mit_kp = np.asarray(args.mit_kp, dtype=np.float64)
+    mit_kd = np.asarray(args.mit_kd, dtype=np.float64)
+    mit_torque = np.asarray(args.mit_torque_limit_nm, dtype=np.float64)
+    if (
+        mit_kp.shape != (6,)
+        or not np.all(np.isfinite(mit_kp))
+        or np.any(mit_kp < 0.0)
+        or np.any(mit_kp > 500.0)
+    ):
+        raise ValueError("MIT Kp must contain six finite values in [0, 500]")
+    if (
+        mit_kd.shape != (6,)
+        or not np.all(np.isfinite(mit_kd))
+        or np.any(mit_kd < 0.0)
+        or np.any(mit_kd > 5.0)
+    ):
+        raise ValueError("MIT Kd must contain six finite values in [0, 5]")
+    effort_limit = np.array([27.0, 27.0, 27.0, 7.0, 7.0, 7.0])
+    if (
+        mit_torque.shape != (6,)
+        or not np.all(np.isfinite(mit_torque))
+        or np.any(mit_torque <= 0.0)
+        or np.any(mit_torque > effort_limit)
+    ):
+        raise ValueError(
+            "MIT torque limits must be positive and no greater than "
+            "[27, 27, 27, 7, 7, 7] N*m"
+        )
+    if (
+        not np.isfinite(args.mit_gravity_scale)
+        or not 0.0 <= args.mit_gravity_scale <= 2.0
+    ):
+        raise ValueError("MIT gravity scale must be in [0, 2]")
+    if (
+        not np.isfinite(args.mit_gravity_ramp_s)
+        or args.mit_gravity_ramp_s < 0.0
+    ):
+        raise ValueError("MIT gravity ramp must be non-negative")
 
 
 def follower_pos_vel_velocity(arm_speed_rad_s: float, wrist_speed_rad_s: float, gripper_speed_deg_s: float) -> list[float]:

@@ -9,6 +9,7 @@ from lerobot_teleoperator_rebot_vr.cartesian_controller import CartesianControlS
 from lerobot_teleoperator_rebot_vr.csv_logger import (
     CSV_FIELDNAMES,
     CSVLogger,
+    LATENCY_FIELDNAMES,
     build_csv_row,
 )
 from lerobot_teleoperator_rebot_vr.pose_mapping import TeleopState
@@ -45,6 +46,27 @@ def _status() -> CartesianControlStatus:
         qp_solve_time_ms=1.5,
         tcp_position_error_m=0.003,
         control_loop_hz=59.9,
+        tracking_sample_age_ms=4.0,
+        vr_decode_ms=0.2,
+        latest_sample_wait_ms=1.0,
+        tracking_receive_to_pickup_ms=1.2,
+        feedback_read_ms=1.5,
+        fk_ms=0.1,
+        pose_mapping_ms=0.2,
+        qp_coordination_ms=0.1,
+        ik_sample_to_submit_ms=2.0,
+        ik_queue_wait_ms=0.3,
+        ik_worker_total_ms=1.7,
+        ik_result_wait_ms=0.5,
+        ik_sample_to_command_ready_ms=4.5,
+        command_shaping_ms=0.2,
+        controller_update_ms=2.5,
+        send_action_ms=2.0,
+        tracking_receive_to_send_ms=7.0,
+        ik_receive_to_send_ms=6.5,
+        command_to_next_feedback_ms=14.0,
+        cycle_work_ms=6.0,
+        ik_result_consumed_this_cycle=True,
     )
 
 
@@ -65,6 +87,11 @@ def test_build_csv_row_flattens_seven_joint_status_and_diagnostics() -> None:
     assert row["condition_number"] == pytest.approx(12.5)
     assert row["qp_solve_time_ms"] == pytest.approx(1.5)
     assert row["dq_norm_rad_s"] == pytest.approx(0.6)
+    assert row["motor_control_mode"] == "pos_vel"
+    assert row["mit_gravity_elbow_flex_nm"] == ""
+    assert row["vr_decode_ms"] == pytest.approx(0.2)
+    assert row["ik_receive_to_send_ms"] == pytest.approx(6.5)
+    assert row["ik_result_consumed_this_cycle"] is True
 
 
 def test_csv_logger_close_drains_all_queued_rows(tmp_path) -> None:
@@ -83,6 +110,13 @@ def test_csv_logger_close_drains_all_queued_rows(tmp_path) -> None:
     assert float(rows[0]["command_gripper_deg"]) == pytest.approx(26.0)
     with pytest.raises(RuntimeError, match="closed"):
         logger.write_row(build_csv_row(_status()))
+
+    with logger.summary_path.open(newline="", encoding="utf-8") as stream:
+        summary = {row["metric"]: row for row in csv.DictReader(stream)}
+    assert tuple(summary) == LATENCY_FIELDNAMES
+    assert int(summary["vr_decode_ms"]["samples"]) == 2
+    assert float(summary["vr_decode_ms"]["mean_ms"]) == pytest.approx(0.2)
+    assert float(summary["ik_receive_to_send_ms"]["p95_ms"]) == pytest.approx(6.5)
 
 
 def test_csv_log_cli_is_optional_path() -> None:

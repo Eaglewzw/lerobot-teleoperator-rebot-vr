@@ -729,7 +729,7 @@ def test_adaptive_qp_cli_defaults_modes_and_validation() -> None:
     assert defaults.max_joint_speed_rad_s == pytest.approx(5.5)
     assert defaults.max_joint_acceleration_rad_s2 == pytest.approx(20.0)
     assert defaults.max_relative_target_deg == pytest.approx(20.0)
-    assert defaults.fps == pytest.approx(70.0)
+    assert defaults.fps == pytest.approx(90.0)
     assert defaults.status_rate == pytest.approx(5.0)
     _validate_args(defaults)
 

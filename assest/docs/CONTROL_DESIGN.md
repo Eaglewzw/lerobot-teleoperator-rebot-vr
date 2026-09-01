@@ -19,12 +19,21 @@ VR tracking sample
   -> send_action()
 ```
 
-实机执行模式：`rebot-vr-teleoperate` 将六个机械臂关节配置为达妙 `pos_vel` 模式。
-ACTIVE 中上层发送由 QP `dq` 生成的分轴前视位置目标，LeRobot follower 同时发送分轴
-`pos_vel_velocity` 速度上限；A/B 回位和非 ACTIVE 六轴目标仍使用速度/加速度位置整形。
+实机默认将六个机械臂关节配置为达妙 `pos_vel` 模式。显式设置
+`--motor-control-mode mit` 后，插件发送六轴 `q_des/dq_des/Kp/Kd/tau_g`；`tau_g` 由
+Pinocchio 读取独立的固定末端动力学 URDF 计算并经过倍率、可选渐入和分轴前馈限幅。默认
+前三轴默认 `Kp=70、Kd=4`，腕部默认 `Kp=12、Kd=1`；重力倍率为 1、渐入为 0。参考工程
+的 `Kp=8、Kd=1` 用于柔顺锁定，不作为带负载目标跟踪的默认值。默认前馈
+限幅为 URDF effort `[27,27,27,7,7,7] N*m`。ACTIVE
+中两种模式都使用 QP `dq` 生成的分轴前视位置目标；MIT 速度目标由最终限幅后的
+`(q_command-q_actual)/lookahead` 得到。新 QP 结果到达时它等于该结果的 `dq`，没有新
+结果时会随位置误差收敛而自然降到零，避免复用旧的非零速度。A/B 回位和非 ACTIVE 六轴
+目标仍使用速度/加速度位置整形，MIT 速度目标在这些状态为零。
+
 启动姿态只整形 q1-q6，夹爪命令原样跟随反馈；进入 VR 主循环取得新鲜 Tracking 后，
-Trigger 目标才参与夹爪整形。夹爪默认保持 `force_pos`。参数整定阶段不使用零扭矩
-前馈的 MIT 模式，避免负载稳态误差影响启动姿态和 TCP 跟踪。
+Trigger 目标才参与夹爪整形。第七个夹爪电机不进入六轴动力学模型，默认始终保持独立
+`force_pos`。动力学 `end_link` 的惯性必须覆盖完整固定末端组件；更换夹爪或负载后需
+更新模型。默认保持 `pos_vel`，MIT 必须在托住机械臂的条件下先验证重力力矩方向。
 
 Grip 激活时记录 `p_tcp_ref`、`R_tcp_ref`、`p_vr_ref`、`R_vr_ref`。目标为：
 
@@ -107,6 +116,8 @@ control/gripper.py       Trigger 重新接管、夹爪目标和单轴命令整�
 control/feedback.py      反馈字段解析、有限值与反馈限位诊断
 control/arm_command.py   ACTIVE 前视/非 ACTIVE 整形与反馈窗口约束
 control/status.py        正常控制周期的状态和 IK 诊断快照组装
+control/dynamics.py      六轴 Pinocchio 重力项计算与动力学模型结构校验
+control/mit.py           插件内 MIT 发送、前馈/速度/相对目标限幅及独立夹爪发送
 ik/coordination.py       generation、latest-only 请求、速度前馈和结果验收
 ik/kinematics.py         Pinocchio FK/Jacobian 与 QP 数值求解
 ik/async_worker.py       latest-only worker 线程与不可变请求/结果
@@ -114,7 +125,7 @@ vr/adapter.py            原始 VR action 到不可变 VRFrame 的适配
 vr/tracking.py           不可变 Tracking 样本、校验与 latest-only 样本槽
 vr/xr_v1.py              XRoboToolkit V1 TCP 流式解包和接收线程
 runtime/                 实机 CLI、启动过程和反馈故障退出路径
-diagnostics/             CSV 记录、离线分析和桌面交互查看器
+diagnostics/             CSV 记录和离线数值分析
 tools/                   夹爪与 VR 独立诊断命令
 ```
 

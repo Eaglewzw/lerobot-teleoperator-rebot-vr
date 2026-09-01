@@ -89,6 +89,7 @@ class ControllerSample:
     primary_button: bool = False
     secondary_button: bool = False
     status: Any = None
+    published_monotonic_ns: int = 0
 
     def __post_init__(self) -> None:
         received_ns = _nonnegative_int(
@@ -98,6 +99,9 @@ class ControllerSample:
             self.tracking_timestamp_ns, "tracking_timestamp_ns"
         )
         epoch = _nonnegative_int(self.stream_epoch, "stream_epoch")
+        published_ns = _nonnegative_int(
+            self.published_monotonic_ns, "published_monotonic_ns"
+        )
         side = normalize_controller_side(self.side)
         position = _readonly_vector(self.position, (3,), "position")
         quaternion = _readonly_vector(
@@ -120,6 +124,7 @@ class ControllerSample:
         object.__setattr__(self, "received_monotonic_ns", received_ns)
         object.__setattr__(self, "tracking_timestamp_ns", tracking_ns)
         object.__setattr__(self, "stream_epoch", epoch)
+        object.__setattr__(self, "published_monotonic_ns", published_ns)
         object.__setattr__(self, "side", side)
         object.__setattr__(self, "position", position)
         object.__setattr__(self, "quaternion_xyzw", quaternion)

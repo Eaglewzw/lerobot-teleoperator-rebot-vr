@@ -41,6 +41,7 @@ def vr_frame_from_raw_action(action: dict[str, object]) -> VRFrame:
         trigger=float(action["trigger"]),
         is_tracking=bool(action["is_tracking"]),
         received_monotonic_ns=int(action["received_monotonic_ns"]),
+        published_monotonic_ns=int(action.get("published_monotonic_ns", 0)),
         tracking_timestamp_ns=int(action.get("tracking_timestamp_ns", 0)),
         stream_epoch=int(action.get("stream_epoch", 0)),
         side=str(action.get("side", "right")),

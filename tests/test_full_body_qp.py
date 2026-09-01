@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 import numpy as np
 import pytest
 
@@ -318,6 +320,7 @@ def test_qp_target_does_not_integrate_feedback_delay(model):
     seed = q.copy()
     targets = []
     for sequence in range(1, 4):
+        submitted_ns = time.monotonic_ns()
         request = IKRequest(
             sequence=sequence,
             generation=1,
@@ -329,9 +332,14 @@ def test_qp_target_does_not_integrate_feedback_delay(model):
             dq_previous=np.zeros(6),
             q_nominal=q,
             dt=0.02,
+            submitted_monotonic_ns=submitted_ns,
+            sample_received_monotonic_ns=submitted_ns - 1_000_000,
         )
         result = worker._solve(request)
         assert result.success
+        assert result.sample_received_monotonic_ns == submitted_ns - 1_000_000
+        assert result.worker_started_monotonic_ns >= result.submitted_monotonic_ns
+        assert result.completed_monotonic_ns >= result.worker_started_monotonic_ns
         targets.append(result.q_target_rad.copy())
         seed = result.q_target_rad.copy()
     # Feedback is intentionally held at q. Re-solving the same target must

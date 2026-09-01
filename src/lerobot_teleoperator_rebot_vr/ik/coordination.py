@@ -27,6 +27,7 @@ class QPRequestCoordinator:
         self.sequence = 0
         self.last_result: IKResult | None = None
         self.last_result_age_ms: float | None = None
+        self.last_result_consumed_monotonic_ns: int | None = None
         self.target_linear_velocity_m_s = np.zeros(3, dtype=np.float64)
         self.target_angular_velocity_rad_s = np.zeros(3, dtype=np.float64)
 
@@ -49,6 +50,7 @@ class QPRequestCoordinator:
         self._last_submitted_sample_id = None
         self._last_submission_ns = None
         self.last_result = None
+        self.last_result_consumed_monotonic_ns = None
         self._last_request_actual_rad = None
         self._last_request_dt_s = None
         self._dq_rad_s.fill(0.0)
@@ -115,6 +117,9 @@ class QPRequestCoordinator:
                 dt=qp_dt_s,
                 q_nominal=q_nominal_rad,
                 submitted_monotonic_ns=now_ns,
+                sample_received_monotonic_ns=(
+                    0 if frame is None else int(frame.received_monotonic_ns)
+                ),
             )
         )
         self._last_submitted_sample = current_sample_key
@@ -139,11 +144,18 @@ class QPRequestCoordinator:
             or state is not TeleopState.ACTIVE
             or result.sequence != self._last_submitted_sequence
             or result.sample_id != self._last_submitted_sample_id
-            or result.solve_time_ms > self.config.qp_max_solve_time_ms
         ):
             return None
 
         self.last_result = result
+        self.last_result_consumed_monotonic_ns = now_ns
+        self.last_result_age_ms = (
+            None
+            if result.submitted_monotonic_ns <= 0
+            else max(0.0, (now_ns - result.submitted_monotonic_ns) * 1e-6)
+        )
+        if result.solve_time_ms > self.config.qp_max_solve_time_ms:
+            return None
         solver_candidate = np.asarray(result.q_target_rad, dtype=np.float64)
         if solver_candidate.shape != (6,) or not np.all(np.isfinite(solver_candidate)):
             return None
@@ -176,11 +188,6 @@ class QPRequestCoordinator:
             q_actual_rad >= self.upper_limit_rad - margin,
             q_actual_rad,
             self.upper_limit_rad - margin,
-        )
-        self.last_result_age_ms = (
-            None
-            if result.submitted_monotonic_ns <= 0
-            else max(0.0, (now_ns - result.submitted_monotonic_ns) * 1e-6)
         )
         return np.clip(candidate, safe_lower, safe_upper)
 

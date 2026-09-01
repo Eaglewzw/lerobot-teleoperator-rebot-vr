@@ -31,10 +31,12 @@ class IKRequest:
     q_nominal: np.ndarray
     dt: float
     submitted_monotonic_ns: int
+    sample_received_monotonic_ns: int
 
     def __init__(self, *, sequence: int, generation: int, sample_id: int,
                  target_position: np.ndarray, target_rotation: np.ndarray,
                  q_seed: np.ndarray, submitted_monotonic_ns: int | None = None,
+                 sample_received_monotonic_ns: int = 0,
                  q_actual: np.ndarray | None = None,
                  dq_previous: np.ndarray | None = None, q_nominal: np.ndarray | None = None,
                  target_linear_velocity_m_s: np.ndarray | None = None,
@@ -42,7 +44,8 @@ class IKRequest:
                  dt: float = 0.01) -> None:
         sequence = int(sequence); generation = int(generation); sample_id = int(sample_id)
         submitted = time.monotonic_ns() if submitted_monotonic_ns is None else int(submitted_monotonic_ns)
-        if sequence <= 0 or generation < 0 or sample_id < 0 or submitted < 0:
+        sample_received = int(sample_received_monotonic_ns)
+        if sequence <= 0 or generation < 0 or sample_id < 0 or submitted < 0 or sample_received < 0:
             raise ValueError("invalid request identity")
         rotation = np.asarray(target_rotation, dtype=np.float64)
         if rotation.shape != (3, 3) or not np.all(np.isfinite(rotation)):
@@ -82,6 +85,7 @@ class IKRequest:
         object.__setattr__(self, "q_nominal", _readonly_vector(q_seed if q_nominal is None else q_nominal, 6, "q_nominal"))
         object.__setattr__(self, "dt", float(dt))
         object.__setattr__(self, "submitted_monotonic_ns", submitted)
+        object.__setattr__(self, "sample_received_monotonic_ns", sample_received)
 
 
 @dataclass(frozen=True)
@@ -101,6 +105,9 @@ class IKResult:
     orientation_weight: float = float("nan")
     joint_velocity_rad_s: np.ndarray | None = None
     submitted_monotonic_ns: int = 0
+    sample_received_monotonic_ns: int = 0
+    worker_started_monotonic_ns: int = 0
+    completed_monotonic_ns: int = 0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "q_target_rad", _readonly_vector(self.q_target_rad, 6, "q_target_rad"))
@@ -114,8 +121,14 @@ class IKResult:
             )
         if self.sequence <= 0 or self.generation < 0 or self.sample_id < 0:
             raise ValueError("invalid result identity")
-        if self.submitted_monotonic_ns < 0:
-            raise ValueError("submitted_monotonic_ns must be non-negative")
+        timestamps = (
+            self.submitted_monotonic_ns,
+            self.sample_received_monotonic_ns,
+            self.worker_started_monotonic_ns,
+            self.completed_monotonic_ns,
+        )
+        if any(value < 0 for value in timestamps):
+            raise ValueError("IK monotonic timestamps must be non-negative")
         if not np.isfinite(self.solve_time_ms) or self.solve_time_ms < 0.0:
             raise ValueError("solve_time_ms must be finite and non-negative")
 
@@ -200,6 +213,7 @@ class LatestOnlyQPIKWorker:
                 # Do not add this increment to q_seed again: doing so turns
                 # feedback latency into an uncontrolled target integrator.
                 self.solved += 1
+            completed = time.monotonic_ns()
             return IKResult(
                 generation=request.generation,
                 sequence=request.sequence,
@@ -220,7 +234,28 @@ class LatestOnlyQPIKWorker:
                 orientation_weight=float(solve_result.orientation_weight),
                 joint_velocity_rad_s=solve_result.joint_velocity_rad_s,
                 submitted_monotonic_ns=request.submitted_monotonic_ns,
+                sample_received_monotonic_ns=(
+                    request.sample_received_monotonic_ns
+                ),
+                worker_started_monotonic_ns=started,
+                completed_monotonic_ns=completed,
             )
         except Exception as exc:
             self.rejected += 1
-            return IKResult(request.generation, request.sequence, request.sample_id, request.q_seed.copy(), False, float("nan"), (time.monotonic_ns() - started) * 1e-6, f"solver_exception:{type(exc).__name__}")
+            completed = time.monotonic_ns()
+            return IKResult(
+                generation=request.generation,
+                sequence=request.sequence,
+                sample_id=request.sample_id,
+                q_target_rad=request.q_seed.copy(),
+                success=False,
+                position_error_m=float("nan"),
+                solve_time_ms=(completed - started) * 1e-6,
+                reason=f"solver_exception:{type(exc).__name__}",
+                submitted_monotonic_ns=request.submitted_monotonic_ns,
+                sample_received_monotonic_ns=(
+                    request.sample_received_monotonic_ns
+                ),
+                worker_started_monotonic_ns=started,
+                completed_monotonic_ns=completed,
+            )

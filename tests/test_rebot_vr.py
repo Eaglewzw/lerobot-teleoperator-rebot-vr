@@ -14,6 +14,7 @@ from lerobot.teleoperators.utils import make_teleoperator_from_config
 from lerobot.utils.import_utils import register_third_party_plugins
 from lerobot_teleoperator_rebot_vr import RebotVRTeleop, RebotVRTeleopConfig
 from lerobot_teleoperator_rebot_vr.config_rebot_vr import REBOT_JOINTS
+from lerobot_teleoperator_rebot_vr.runtime.cli import build_parser
 
 
 def _config(tmp_path, **overrides) -> RebotVRTeleopConfig:
@@ -108,7 +109,7 @@ def test_registered_teleop_features_include_required_robot_feedback(tmp_path) ->
     assert teleop.is_calibrated
 
 
-def test_real_runner_uses_pos_vel_for_arm_control() -> None:
+def test_real_runner_defaults_to_pos_vel_and_allows_explicit_mit() -> None:
     source = (
         __import__("pathlib")
         .Path(__file__)
@@ -116,8 +117,15 @@ def test_real_runner_uses_pos_vel_for_arm_control() -> None:
         .joinpath("src/lerobot_teleoperator_rebot_vr/runtime/real.py")
         .read_text()
     )
-    assert 'control_mode="pos_vel"' in source
-    assert 'control_mode="mit"' not in source
+    assert build_parser().parse_args([]).motor_control_mode == "pos_vel"
+    assert (
+        build_parser()
+        .parse_args(["--motor-control-mode", "mit"])
+        .motor_control_mode
+        == "mit"
+    )
+    assert "control_mode=args.motor_control_mode" in source
+    assert "MITCommandDispatcher" in source
 
 
 def test_registered_teleop_fails_closed_without_feedback_then_uses_qp_controller(

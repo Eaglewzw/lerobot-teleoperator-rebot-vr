@@ -25,6 +25,12 @@ def finite_ik_diagnostic(
     return None
 
 
+def elapsed_ms(start_ns: int, end_ns: int) -> float | None:
+    if start_ns <= 0 or end_ns <= 0:
+        return None
+    return max(0.0, (end_ns - start_ns) * 1e-6)
+
+
 def build_running_status(
     *,
     mapping: PoseMappingUpdate,
@@ -63,6 +69,15 @@ def build_running_status(
         )
 
     ik_result = qp.last_result
+    consumed_ns = qp.last_result_consumed_monotonic_ns
+    sample_received_ns = (
+        0 if ik_result is None else ik_result.sample_received_monotonic_ns
+    )
+    submitted_ns = 0 if ik_result is None else ik_result.submitted_monotonic_ns
+    worker_started_ns = (
+        0 if ik_result is None else ik_result.worker_started_monotonic_ns
+    )
+    completed_ns = 0 if ik_result is None else ik_result.completed_monotonic_ns
     command_deg = np.rad2deg(q_command_rad)
     target_deg = np.rad2deg(q_goal_rad)
     return CartesianControlStatus(
@@ -131,4 +146,45 @@ def build_running_status(
             else max(0.0, (now_ns - int(frame.received_monotonic_ns)) * 1e-6)
         ),
         control_loop_hz=1.0 / dt_s,
+        tracking_sample_received_monotonic_ns=(
+            None if frame is None else int(frame.received_monotonic_ns)
+        ),
+        tracking_sample_published_monotonic_ns=(
+            None
+            if frame is None or int(getattr(frame, "published_monotonic_ns", 0)) <= 0
+            else int(getattr(frame, "published_monotonic_ns"))
+        ),
+        tracking_timestamp_ns=(
+            None if frame is None else int(frame.tracking_timestamp_ns)
+        ),
+        tracking_stream_epoch=(
+            None if frame is None else int(frame.stream_epoch)
+        ),
+        ik_sequence=None if ik_result is None else ik_result.sequence,
+        ik_sample_id=None if ik_result is None else ik_result.sample_id,
+        # The controller compares the consumed timestamp at cycle boundaries
+        # and replaces this value after building the status.
+        ik_result_consumed_this_cycle=False,
+        ik_sample_received_monotonic_ns=(
+            None if sample_received_ns <= 0 else sample_received_ns
+        ),
+        ik_submitted_monotonic_ns=None if submitted_ns <= 0 else submitted_ns,
+        ik_worker_started_monotonic_ns=(
+            None if worker_started_ns <= 0 else worker_started_ns
+        ),
+        ik_completed_monotonic_ns=None if completed_ns <= 0 else completed_ns,
+        ik_consumed_monotonic_ns=consumed_ns,
+        ik_sample_to_submit_ms=elapsed_ms(sample_received_ns, submitted_ns),
+        ik_queue_wait_ms=elapsed_ms(submitted_ns, worker_started_ns),
+        ik_worker_total_ms=elapsed_ms(worker_started_ns, completed_ns),
+        ik_result_wait_ms=(
+            None
+            if consumed_ns is None
+            else elapsed_ms(completed_ns, consumed_ns)
+        ),
+        ik_sample_to_command_ready_ms=(
+            None
+            if consumed_ns is None
+            else elapsed_ms(sample_received_ns, consumed_ns)
+        ),
     )

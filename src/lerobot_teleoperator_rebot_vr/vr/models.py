@@ -31,6 +31,7 @@ class VRFrame:
     trigger: float
     is_tracking: bool = True
     received_monotonic_ns: int = 0
+    published_monotonic_ns: int = 0
     tracking_timestamp_ns: int = 0
     stream_epoch: int = 0
     side: str = "right"
@@ -49,6 +50,8 @@ class VRFrame:
             raise ValueError("squeeze and trigger must be finite")
         if self.received_monotonic_ns < 0:
             raise ValueError("received_monotonic_ns must be non-negative")
+        if self.published_monotonic_ns < 0:
+            raise ValueError("published_monotonic_ns must be non-negative")
         if self.tracking_timestamp_ns < 0:
             raise ValueError("tracking_timestamp_ns must be non-negative")
         if self.stream_epoch < 0:
@@ -76,6 +79,7 @@ class VRFrame:
         object.__setattr__(self, "trigger", float(np.clip(self.trigger, 0.0, 1.0)))
         object.__setattr__(self, "is_tracking", bool(self.is_tracking))
         object.__setattr__(self, "received_monotonic_ns", int(self.received_monotonic_ns))
+        object.__setattr__(self, "published_monotonic_ns", int(self.published_monotonic_ns))
         object.__setattr__(self, "tracking_timestamp_ns", int(self.tracking_timestamp_ns))
         object.__setattr__(self, "stream_epoch", int(self.stream_epoch))
         object.__setattr__(self, "side", side)

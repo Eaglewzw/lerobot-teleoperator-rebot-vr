@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 
 import numpy as np
 
@@ -159,6 +160,7 @@ class FullBodyQPIKController:
         *,
         now_ns: int | None = None,
     ) -> tuple[dict[str, float] | None, CartesianControlStatus]:
+        controller_started_ns = time.monotonic_ns()
         q_actual_rad, gripper_actual_deg, feedback_error = read_robot_feedback(
             observation
         )
@@ -210,8 +212,14 @@ class FullBodyQPIKController:
         # Normalize dt before it is captured in an asynchronous QP request.
         dt_s = float(np.clip(dt_s, 1e-6, 0.05))
 
+        fk_started_ns = time.monotonic_ns()
         tcp_position, ee_rotation = self.kinematics.forward_kinematics(q_control_actual_rad)
+        fk_finished_ns = time.monotonic_ns()
         now_value_ns = time.monotonic_ns() if now_ns is None else int(now_ns)
+
+        def qp_boundary_ns() -> int:
+            return now_value_ns if now_ns is not None else time.monotonic_ns()
+
         sample_fresh = sample_is_fresh(
             frame, now_value_ns, self.config.stale_timeout_s
         )
@@ -232,9 +240,11 @@ class FullBodyQPIKController:
         return_requested = home_requested or zero_requested
         if return_requested:
             self.mapper.reset(require_release=True)
+        mapping_started_ns = time.monotonic_ns()
         mapping = self.mapper.update(
             frame, tcp_position, ee_rotation, now_ns=now_ns
         )
+        mapping_finished_ns = time.monotonic_ns()
 
         if mapping.state != self._last_state:
             # A return edge also forces IDLE; one invalidation is sufficient for
@@ -275,12 +285,14 @@ class FullBodyQPIKController:
                     self.config.gripper_closed_deg, trigger
                 )
 
+        consumed_before_ns = self.qp.last_result_consumed_monotonic_ns
+        qp_coordination_started_ns = time.monotonic_ns()
         # Consume a completed result before deciding whether the next request
         # is still in flight. This permits one new QP request per fresh sample.
         qp_goal_rad = self.qp.consume_latest(
             state=mapping.state,
             q_actual_rad=q_control_actual_rad,
-            now_ns=now_value_ns,
+            now_ns=qp_boundary_ns(),
         )
         if qp_goal_rad is not None:
             self._q_goal_rad = qp_goal_rad
@@ -301,7 +313,7 @@ class FullBodyQPIKController:
                     else self._qp_nominal_rad
                 ),
                 dt_s=dt_s,
-                now_ns=now_value_ns,
+                now_ns=qp_boundary_ns(),
             )
             if submitted:
                 # Immediate/test workers can finish synchronously. Consume
@@ -309,11 +321,13 @@ class FullBodyQPIKController:
                 qp_goal_rad = self.qp.consume_latest(
                     state=mapping.state,
                     q_actual_rad=q_control_actual_rad,
-                    now_ns=now_value_ns,
+                    now_ns=qp_boundary_ns(),
                 )
                 if qp_goal_rad is not None:
                     self._q_goal_rad = qp_goal_rad
+        qp_coordination_finished_ns = time.monotonic_ns()
 
+        command_shaping_started_ns = time.monotonic_ns()
         tracking_fresh = mapping.state in (TeleopState.IDLE, TeleopState.ACTIVE)
         self.gripper.update_trigger_target(
             tracking_fresh=tracking_fresh,
@@ -362,10 +376,11 @@ class FullBodyQPIKController:
             for index, name in enumerate(ARM_JOINT_NAMES)
         }
         action[f"{GRIPPER_NAME}.pos"] = self.gripper.command_deg
+        command_shaping_finished_ns = time.monotonic_ns()
         status = build_running_status(
             mapping=mapping,
             frame=frame,
-            now_ns=now_value_ns,
+            now_ns=qp_boundary_ns(),
             dt_s=dt_s,
             tracking_fresh=tracking_fresh,
             trigger=trigger,
@@ -383,6 +398,29 @@ class FullBodyQPIKController:
             worker=self.worker,
             qp=self.qp,
             config=self.config,
+        )
+        controller_finished_ns = time.monotonic_ns()
+        status = replace(
+            status,
+            ik_result_consumed_this_cycle=(
+                self.qp.last_result_consumed_monotonic_ns is not None
+                and self.qp.last_result_consumed_monotonic_ns
+                != consumed_before_ns
+            ),
+            fk_ms=(fk_finished_ns - fk_started_ns) * 1e-6,
+            pose_mapping_ms=(mapping_finished_ns - mapping_started_ns) * 1e-6,
+            qp_coordination_ms=(
+                qp_coordination_finished_ns - qp_coordination_started_ns
+            )
+            * 1e-6,
+            command_shaping_ms=(
+                command_shaping_finished_ns - command_shaping_started_ns
+            )
+            * 1e-6,
+            controller_update_ms=(
+                controller_finished_ns - controller_started_ns
+            )
+            * 1e-6,
         )
         return action, status
 

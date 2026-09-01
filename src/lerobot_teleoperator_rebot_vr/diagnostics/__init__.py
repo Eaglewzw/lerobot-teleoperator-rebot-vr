@@ -1,1 +1,1 @@
-"""CSV telemetry recording, analysis, and interactive visualization."""
+"""CSV telemetry recording and offline numerical analysis."""

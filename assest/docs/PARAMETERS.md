@@ -18,7 +18,14 @@
 | `--gripper-max-speed-deg-s` | `1200` | **1200** | 夹爪速度上限（°/s） |
 | `--gripper-max-acceleration-deg-s2` | `5000` | 推荐 ≤50000 | 夹爪加速度上限（°/s²） |
 | `--gripper-torque-ratio` | `0.2` | `1.0` | FORCE_POS 最大夹持力比例；CLI 强制 [0, 1] |
-| `--fps` | `70` | ≤120 | 主循环频率（Hz） |
+| `--motor-control-mode` | `pos_vel` | `pos_vel/mit` | q1-q6 底层模式；MIT 由插件发送速度目标和重力前馈 |
+| `--mit-kp` | `70 70 70 12 12 12` | 每轴 `500` | q1-q3 与 q4-q6 的 MIT 位置增益 |
+| `--mit-kd` | `4 4 4 1 1 1` | 每轴 `5` | q1-q3 与 q4-q6 的 MIT 速度增益 |
+| `--mit-torque-limit-nm` | `27 27 27 7 7 7` | URDF effort | 重力前馈项绝对限幅（N·m），不是 PD 总扭矩限幅 |
+| `--mit-gravity-scale` | `1.0` | `2.0` | Pinocchio 重力项倍率；CLI 强制 [0, 2] |
+| `--mit-gravity-ramp-s` | `0.0` | — | 首条 MIT 命令后重力前馈渐入时间；0 表示与参考控制器相同，直接应用 `g(q)` |
+| `--mit-dynamics-urdf` | 打包模型 | — | 替换六轴惯性 URDF；更换末端负载后必须更新 |
+| `--fps` | `90` | ≤120 | 主循环频率（Hz） |
 | `--qp-solver` | `scipy` | `scipy/osqp` | QP 后端；OSQP 需安装 `.[qp]` |
 | `--ik-mode` | `pose` | `pose/position` | 完整位姿或纯 XYZ 任务 |
 | `--qp-position-cost` | `20` | — | TCP 位置任务权重 |
@@ -38,7 +45,7 @@
 | `--joint-limit-margin-deg` | `2` | — | QP 关节限位内缩余量（deg） |
 | `--qp-max-solve-time-ms` | `8` | — | 单次 QP 时间预算；超预算结果被丢弃 |
 | `--feedback-fault-max-consecutive` | `5` | — | HOLD 连续故障帧数达到后受控退出 |
-| `--csv-log` | 不记录 | — | 逐帧异步写入关节状态与 IK 诊断 CSV |
+| `--csv-log` | 不记录 | — | 异步写入逐帧关节、IK 与链路延迟 CSV，并在结束时生成 `_latency_summary.csv` |
 | `--status-rate` | `5` | — | 状态行输出频率（Hz） |
 
 > [!IMPORTANT]
@@ -72,7 +79,7 @@ rebot-vr-teleoperate \
   --gripper-relative-target-deg 20
 ```
 
-臂部与夹爪命令均依次经过三层钳制：QP/整形器速度与加速度约束 → controller 命令-反馈窗口（相对目标 × 0.9）→ follower 相对目标。相对目标对应等效速度上限 `相对目标 × fps`：默认 70 fps、20° 相对目标对应 1400°/s，满足 1200°/s。以 20000°/s² 加速到 1200°/s 需 36°，小于默认 180° 行程（−180° → 0°）。
+臂部与夹爪命令均依次经过三层钳制：QP/整形器速度与加速度约束 → controller 命令-反馈窗口（相对目标 × 0.9）→ follower/插件发送层相对目标。相对目标对应等效速度上限 `相对目标 × fps`：默认 90 fps、20° 相对目标对应 1800°/s，满足 1200°/s。以 20000°/s² 加速到 1200°/s 需 36°，小于默认 180° 行程（−180° → 0°）。
 
 > [!TIP]
 > 相对目标须 ≥ 最大速度 ÷ fps，否则实际速度受限；加速度建议从低值分档上调（10 → 20 → 40 → 60），每档观察跟踪误差与跳变冲击。

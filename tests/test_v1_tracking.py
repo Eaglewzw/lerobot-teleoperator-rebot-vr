@@ -102,6 +102,12 @@ def test_tracking_decoder_accepts_string_or_object_and_ignores_other_messages() 
     )
     assert source.latest_sample() is None
 
+    source.feed_bytes(_packet(_tracking()), received_monotonic_ns=3)
+    sample = source.latest_sample()
+    assert sample is not None
+    assert sample.received_monotonic_ns == 3
+    assert sample.published_monotonic_ns > 0
+
 
 def test_controller_sample_xyzw_normalization_button_validation_and_readonly() -> None:
     sample = parse_controller_sample(

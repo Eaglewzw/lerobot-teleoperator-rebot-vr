@@ -12,7 +12,6 @@ from lerobot_teleoperator_rebot_vr.csv_analysis import (
     decimate_minmax,
 )
 from lerobot_teleoperator_rebot_vr.csv_logger import CSV_FIELDNAMES, JOINT_NAMES
-from lerobot_teleoperator_rebot_vr.csv_viewer import build_parser
 
 
 def _row(timestamp_ns: int | str, offset: float = 0.0) -> dict[str, object]:
@@ -117,9 +116,3 @@ def test_dataset_rejects_missing_joint_columns(tmp_path) -> None:
 
     with pytest.raises(ValueError, match="missing fields"):
         TelemetryDataset.load(path)
-
-
-def test_desktop_analyzer_cli() -> None:
-    args = build_parser().parse_args(["logs/session.csv"])
-    assert args.csv_path == Path("logs/session.csv")
-    assert args.geometry == "1500x900"

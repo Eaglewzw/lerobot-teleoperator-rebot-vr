@@ -494,6 +494,7 @@ class V1TrackingSource:
             self._buffer.clear()
             sample = replace(sample, stream_epoch=epoch)
             self._on_status("Tracking clock restarted; release Grip before rearming")
+        sample = replace(sample, published_monotonic_ns=time.monotonic_ns())
         self._buffer.publish(sample)
         if self._on_sample is not None:
             try:

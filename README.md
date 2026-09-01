@@ -10,7 +10,8 @@
 - **离合式激活** —— 按住 Grip 激活，松开即冻结；启动或中断后须先完全松开一次再激活，防止机械臂突跳
 - **latest-only 线程模型** —— VR 接收、QP IK、主控制循环各一个线程，只消费最新数据，互不阻塞
 - **分层安全保护** —— 速度/加速度整形、关节限位、相对目标钳制；反馈异常进入 HOLD 冻结，连续故障受控退出并保持扭矩
-- **CSV 记录与分析** —— `--csv-log` 逐帧写入关节与 IK 诊断，`rebot-vr-csv-analyze` 本地绘图分析
+- **CSV 记录与分析** —— `--csv-log` 逐帧写入关节、IK 诊断和分段延迟，并在退出时生成延迟统计
+- **双电机控制路径** —— 默认稳定的 `POS_VEL`，也可显式启用带关节速度目标与 Pinocchio 重力前馈的六轴 MIT；夹爪独立控制
 
 ## 要求
 
@@ -59,6 +60,17 @@ rebot-vr-teleoperate --help
 ### 1. VR 数据自检（不连机械臂）
 
 ```bash
+  motorbridge-cli scan \
+    --vendor damiao \
+    --transport dm-serial \
+    --serial-port /dev/serial/by-id/usb-HDSC_CDC_Device_00000000050C-if00 \
+    --serial-baud 921600 \
+    --start-id 1 \
+    --end-id 7 \
+    --feedback-base 0x10 \
+    --timeout-ms 1000
+
+
 # 63901 端口同一时间只允许一个进程监听；自检结束后退出本命令再启动遥操。
 rebot-vr-print --backend xrobotoolkit_v1 --host 0.0.0.0 --port 63901 --hand right --rate 10
 ```
@@ -80,14 +92,78 @@ rebot-vr-teleoperate --robot-port /dev/ttyACM0 --backend xrobotoolkit_v1
 | 2 | 仅姿态 | `--position-scale 0 --orientation-scale 1.0` |
 | 3 | 完整映射 | `--position-scale 1.0 --orientation-scale 1.0` |
 
-### 4. CSV 记录与分析
+### 4. MIT 实验模式
+
+默认仍使用 `--motor-control-mode pos_vel`。MIT 只接管 q1-q6；第七个夹爪电机仍按
+`--gripper-control-mode force_pos` 独立发送。首次测试必须托住机械臂，先关闭 VR 位移和
+姿态映射，验证六个关节在多个位姿下的重力方向，再逐级提高速度与增益：
+
+```bash
+rebot-vr-teleoperate \
+  --robot-port /dev/ttyACM0 \
+  --backend xrobotoolkit_v1 \
+  --motor-control-mode mit \
+  --no-move-to-initial \
+  --position-scale 0 \
+  --orientation-scale 0 \
+  --mit-kp 70 70 70 12 12 12 \
+  --mit-kd 4 4 4 1 1 1 \
+  --mit-torque-limit-nm 27 27 27 7 7 7 \
+  --mit-gravity-scale 0.2 \
+  --csv-log logs/mit-hold.csv
+```
+
+默认跟踪增益为前三轴 `Kp=70、Kd=4`，腕部三轴 `Kp=12、Kd=1`。参考工程的重力补偿
+锁定控制器使用六轴 `Kp=8、Kd=1`，基础可拖动示例使用 `Kp=2、Kd=1`；两者适合柔顺保持，
+但不足以作为带负载启动和 VR 目标跟踪的默认值。确认六轴补偿方向均正确后，
+再按 `0.2 → 0.5 → 1.0` 提高重力倍率。MIT 命令为
+`q_des, dq_des, Kp, Kd, tau_g`。`tau_g` 由打包的固定末端六轴动力学
+URDF 计算并直接生效；默认力矩限幅等于 URDF effort 上限。该模型与参考控制工程使用同一
+组惯性数据，`end_link` 质量为 `0.45 kg`，代表完整固定末端组件。若更换夹爪或负载，必须通过
+`--mit-dynamics-urdf` 提供更新后的六轴惯性模型。`--mit-torque-limit-nm` 只限制前馈
+扭矩项，不是电机内部 PD 总输出的硬扭矩限制。MIT 当前属于实机待标定功能，不应直接
+使用高速参数开始测试。
+
+### 5. CSV 记录与延迟分析
 
 
 ```bash
-rebot-vr-teleoperate --robot-port /dev/ttyACM0 --backend xrobotoolkit_v1 --csv-log logs/session.csv
-
-rebot-vr-csv-analyze logs/session.csv
+rebot-vr-teleoperate \
+  --robot-port /dev/ttyACM0 \
+  --backend xrobotoolkit_v1 \
+  --csv-log logs/session.csv
 ```
+
+运行结束后会得到两个文件：
+
+- `logs/session.csv`：逐控制周期的关节、IK 诊断、原始单调时间戳和分段延迟。
+- `logs/session_latency_summary.csv`：各延迟指标的样本数、均值、最小值、P50、P95、P99 和最大值。
+
+主要延迟列的边界如下：
+
+| CSV 列 | 测量范围 |
+|---|---|
+| `vr_decode_ms` | TCP 字节到达 → Tracking JSON 校验并发布到 latest-only 槽 |
+| `latest_sample_wait_ms` | 样本发布 → 主控制循环读取该样本 |
+| `tracking_receive_to_pickup_ms` | TCP 字节到达 → 主循环读取样本 |
+| `feedback_read_ms` | 主循环调用 `robot.get_observation()` 的耗时 |
+| `fk_ms` / `pose_mapping_ms` | Pinocchio FK / VR 相对位姿映射耗时 |
+| `ik_sample_to_submit_ms` | 原始 Tracking 到达 → QP 请求提交 |
+| `ik_queue_wait_ms` | QP 请求提交 → worker 开始求解 |
+| `qp_solve_time_ms` / `ik_worker_total_ms` | 求解器内部耗时 / worker 完整求解耗时 |
+| `ik_result_wait_ms` | worker 完成 → 主线程消费结果 |
+| `command_shaping_ms` | 六轴与夹爪命令整形耗时 |
+| `send_action_ms` | follower 限幅、反馈保护和七电机串口发送调用总耗时 |
+| `ik_receive_to_send_ms` | 产生本次已消费 QP 结果的 Tracking 到达 → 串口发送返回 |
+| `command_to_next_feedback_ms` | 上一周期串口发送返回 → 下一周期反馈读取完成 |
+
+所有 PC 链路延迟均使用 `time.monotonic_ns()`，不会把 PICO 的 `timeStampNs`
+当作 PC 时钟。当前达妙协议没有返回“电机收到命令”的硬件时间戳，因此
+`send_action_ms` 的终点是 PC 串口写入调用返回；`command_to_next_feedback_ms`
+是下一次可观测反馈的周期估计，不是电机侧确认时间。
+
+MIT 模式下 CSV 还会写入六轴 `mit_desired_velocity_*_rad_s`、动力学模型原始
+`mit_gravity_*_nm` 与实际限幅后的 `mit_feedforward_*_nm`，用于检查重力方向和饱和。
 
 
 ## 手柄按键
