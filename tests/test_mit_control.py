@@ -164,7 +164,7 @@ def test_mit_cli_defaults_to_pos_vel_and_validates_protocol_ranges() -> None:
     defaults = parser.parse_args([])
 
     assert defaults.motor_control_mode == "pos_vel"
-    assert defaults.mit_kp == pytest.approx([70.0, 70.0, 70.0, 12.0, 12.0, 12.0])
+    assert defaults.mit_kp == pytest.approx([50.0, 50.0, 50.0, 10.0, 10.0, 10.0])
     assert defaults.mit_kd == pytest.approx([4.0, 4.0, 4.0, 1.0, 1.0, 1.0])
     assert defaults.mit_torque_limit_nm == pytest.approx(
         [27.0, 27.0, 27.0, 7.0, 7.0, 7.0]

@@ -123,11 +123,11 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
         "--mit-kp",
         type=float,
         nargs=6,
-        default=(60.0, 60.0, 60.0, 12.0, 12.0, 12.0),
+        default=(50.0, 50.0, 50.0, 10.0, 10.0, 10.0),
         metavar=("Q1", "Q2", "Q3", "Q4", "Q5", "Q6"),
         help=(
             "MIT position gains for q1-q6 "
-            "(default 70 70 70 12 12 12; valid range 0..500)"
+            "(default 50 50 50 10 10 10; valid range 0..500)"
         ),
     )
     ik.add_argument(
