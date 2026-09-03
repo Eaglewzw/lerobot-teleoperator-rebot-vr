@@ -162,16 +162,18 @@ def test_mit_velocity_recovers_qp_velocity_then_decays_with_position_error() -> 
 def test_mit_cli_defaults_to_pos_vel_and_validates_protocol_ranges() -> None:
     parser = build_parser()
     defaults = parser.parse_args([])
+    mit_defaults = parser.parse_args(["--motor-control-mode", "mit"])
 
     assert defaults.motor_control_mode == "pos_vel"
-    assert defaults.mit_kp == pytest.approx([50.0, 50.0, 50.0, 10.0, 10.0, 10.0])
-    assert defaults.mit_kd == pytest.approx([4.0, 4.0, 4.0, 1.0, 1.0, 1.0])
-    assert defaults.mit_torque_limit_nm == pytest.approx(
+    assert mit_defaults.mit_kp == pytest.approx([36.0, 36.0, 36.0, 10.0, 10.0, 10.0])
+    assert mit_defaults.mit_kd == pytest.approx([4.0, 4.0, 4.0, 1.0, 1.0, 1.0])
+    assert mit_defaults.mit_torque_limit_nm == pytest.approx(
         [27.0, 27.0, 27.0, 7.0, 7.0, 7.0]
     )
-    assert defaults.mit_gravity_scale == pytest.approx(1.0)
-    assert defaults.mit_gravity_ramp_s == pytest.approx(0.0)
+    assert mit_defaults.mit_gravity_scale == pytest.approx(1.0)
+    assert mit_defaults.mit_gravity_ramp_s == pytest.approx(0.0)
     validate_args(defaults)
+    validate_args(mit_defaults)
 
     invalid_kd = parser.parse_args(["--mit-kd", "6", "1", "1", "1", "1", "1"])
     with pytest.raises(ValueError, match="MIT Kd"):

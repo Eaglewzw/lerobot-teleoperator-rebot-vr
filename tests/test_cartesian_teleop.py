@@ -362,8 +362,8 @@ def test_active_qp_command_uses_feedback_bounded_lookahead_without_arm_reshaping
     assert action["shoulder_pan.pos"] == pytest.approx(1.8)
     assert status.target_linear_velocity_m_s == pytest.approx([5.0, 0.0, 0.0])
     rendered = _status_line(status)
-    assert "result_age_ms=0.000" in rendered
-    assert "target_twist linear_m_s/angular_rad_s=" in rendered
+    assert "[ACTIVE]" in rendered
+    assert "command" in rendered
 
 
 def test_wrist_target_updates_when_position_ik_fails() -> None:
@@ -410,7 +410,7 @@ def test_wrist_target_updates_when_position_ik_fails() -> None:
     )
     assert status.orientation_error_deg == pytest.approx(np.rad2deg(0.3))
     rendered_status = _status_line(status)
-    assert "orientation_error_deg=17.189" in rendered_status
+    assert "rot=17.2deg" in rendered_status
 
 
 def test_fresh_tracking_immediately_maps_trigger_to_gripper() -> None:
@@ -603,8 +603,8 @@ def test_consecutive_out_of_limit_feedback_requests_controlled_abort() -> None:
     assert second.feedback_fault_count == 2
     assert second.feedback_fault_reason.startswith("outside_limits:shoulder_pan=")
     rendered = _status_line(second, second_action)
-    assert "state=hold" in rendered
-    assert "feedback=HOLD 2 reason=outside_limits:" in rendered
+    assert "[HOLD]" in rendered
+    assert "fault #2: outside_limits:" in rendered
 
 
 def test_invalid_feedback_before_first_valid_sample_does_not_invent_a_command() -> None:

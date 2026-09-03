@@ -1,16 +1,32 @@
-# reBot B601-DM PICO 4 VR 遥操作插件
+# reBot VR Teleoperation
 
-[![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/)
+### 基于 PICO 4的reBot B601-DM VR 遥操作插件
+
+<div align="center">
+
 [![LeRobot](https://img.shields.io/badge/LeRobot-0.6.x-FFD21E?logo=huggingface&logoColor=white)](https://github.com/huggingface/lerobot)
+![PICO 4](https://img.shields.io/badge/PICO-4-1675D1.svg)
+![QP IK](https://img.shields.io/badge/IK-6--DoF_QP-orange.svg)
+[![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/License-Apache--2.0-3377FF)](LICENSE)
 
-面向 LeRobot 0.6.x、Seeed Studio reBot B601-DM（达妙电机）和 PICO 4，提供低延迟、反馈闭环且安全优先的全六轴笛卡尔 VR 遥操作。
+</div>
 
-- **自适应 6-DoF QP IK**：将手柄位姿实时映射到机械臂 TCP，支持仅位置和完整位姿跟踪；接近奇异位形时自动调整阻尼与姿态权重，提高求解稳定性。
-- **Grip 离合控制**：按住 Grip 才激活跟随，松开后立即停止映射并保持当前姿态；启动或跟踪中断后需要先完全松开，避免恢复时发生突跳。
-- **分层安全保护**：对命令执行关节限位、速度与加速度整形及相对目标约束；反馈缺失、非有限或越界时进入 HOLD，持续异常则受控退出。
-- **双电机控制路径**：默认采用稳定的 `POS_VEL` 位置速度模式，也可显式启用带 Pinocchio 重力前馈的实验性 MIT 模式，夹爪保持独立控制。
-- **运行诊断与分析**：可将关节状态、VR 样本、IK 结果和各阶段延迟逐帧写入 CSV，并在退出时生成延迟统计，便于实机调参与故障定位。
+> 本项目是面向 Seeed Studio reBot B601-DM（达妙电机）的 PICO 4 VR 遥操作插件，通过 LeRobot、VR 位姿映射与闭环 QP IK，实现低延迟、安全可控的全六轴笛卡尔遥操作，适用于实机控制、算法验证与遥操作研究。
+
+---
+
+## 项目简介
+
+系统接收 PICO 4 手柄位姿，将其映射为机械臂 TCP 目标，并结合实时关节反馈生成安全、连续的六轴控制命令。主要功能包括：
+
+- **自适应 6-DoF QP IK**：支持位置、完整位姿跟踪和奇异位形自适应。
+- **Grip 离合控制**：按住跟随，松开保持，恢复跟踪时防止突跳。
+- **分层安全保护**：提供关节限位、命令整形、相对目标和异常反馈保护。
+- **双控制模式**：默认使用 `POS_VEL`，可选带重力前馈的实验性 MIT 模式。
+- **运行诊断**：记录关节、IK 和延迟数据，并生成 CSV 统计。
+
+---
 
 ## 要求
 

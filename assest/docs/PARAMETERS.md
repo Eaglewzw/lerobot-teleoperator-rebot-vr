@@ -2,6 +2,17 @@
 
 `rebot-vr-teleoperate` 常用参数如下；完整参数见 `rebot-vr-teleoperate --help`。
 
+控制参数按电机模式保存在 `config/pos_vel.yaml` 和 `config/mit.yaml`。运行时会根据
+`--motor-control-mode` 自动加载对应文件，命令行显式参数的优先级更高：
+
+```bash
+rebot-vr-teleoperate --motor-control-mode pos_vel
+rebot-vr-teleoperate --motor-control-mode mit
+
+# 自定义配置文件（文件内 motor_control_mode 必须与命令行一致）
+rebot-vr-teleoperate --motor-control-mode mit --control-config config/mit.yaml
+```
+
 | 参数 | 默认 | 最大值 | 说明 |
 |---|---|---|---|
 | `--position-scale` | `1.0` | — | 手柄位移 → TCP 位移倍率 |
@@ -9,7 +20,7 @@
 | `--max-joint-speed-rad-s` | `5.5` | **5.5** | q1–q3 速度约束（rad/s）；起始位姿移动时作用于全部六轴 |
 | `--max-joint-acceleration-rad-s2` | `20` | **20** | q1–q3 加速度约束（rad/s²）；起始位姿移动时作用于全部六轴 |
 | `--wrist-speed-rad-s` | `12` | **12** | q4–q6 速度约束（rad/s） |
-| `--wrist-acceleration-rad-s2` | `60` | **60** | q4–q6 加速度约束（rad/s²） |
+| `--wrist-acceleration-rad-s2` | POS_VEL `8` / MIT `60` | **60** | q4–q6 加速度约束（rad/s²） |
 | `--max-relative-target-deg` | `20` | **20** | 臂部 follower 相对目标钳制（deg） |
 | `--wrist-relative-target-deg` | `20` | **20** | q4–q6 follower 相对目标钳制（deg） |
 | `--gripper-relative-target-deg` | 跟随臂部 | **20** | 夹爪 follower 相对目标钳制（deg）；缺省跟随 `--max-relative-target-deg` |
@@ -19,7 +30,7 @@
 | `--gripper-max-acceleration-deg-s2` | `5000` | 推荐 ≤50000 | 夹爪加速度上限（°/s²） |
 | `--gripper-torque-ratio` | `0.2` | `1.0` | FORCE_POS 最大夹持力比例；CLI 强制 [0, 1] |
 | `--motor-control-mode` | `pos_vel` | `pos_vel/mit` | q1-q6 底层模式；MIT 由插件发送速度目标和重力前馈 |
-| `--mit-kp` | `50 50 50 10 10 10` | 每轴 `500` | q1-q3 与 q4-q6 的 MIT 位置增益 |
+| `--mit-kp` | `36 36 36 10 10 10` | 每轴 `500` | q1-q3 与 q4-q6 的 MIT 位置增益 |
 | `--mit-kd` | `4 4 4 1 1 1` | 每轴 `5` | q1-q3 与 q4-q6 的 MIT 速度增益 |
 | `--mit-torque-limit-nm` | `27 27 27 7 7 7` | URDF effort | 重力前馈项绝对限幅（N·m），不是 PD 总扭矩限幅 |
 | `--mit-gravity-scale` | `1.0` | `2.0` | Pinocchio 重力项倍率；CLI 强制 [0, 2] |
@@ -41,7 +52,7 @@
 | `--singularity-critical-threshold` | `0.02` | — | 达到最大保护的归一化 `sigma_min` |
 | `--singularity-characteristic-length-m` | `0.3` | — | Jacobian 线速度行的尺度归一化长度（m） |
 | `--qp-smoothness-cost` | `0.05` | — | 速度连续性正则 |
-| `--qp-posture-cost` | `0.05` | — | 回归 nominal 姿态正则 |
+| `--qp-posture-cost` | `0.01` | — | 回归 nominal 姿态正则 |
 | `--joint-limit-margin-deg` | `2` | — | QP 关节限位内缩余量（deg） |
 | `--qp-max-solve-time-ms` | `8` | — | 单次 QP 时间预算；超预算结果被丢弃 |
 | `--feedback-fault-max-consecutive` | `5` | — | HOLD 连续故障帧数达到后受控退出 |

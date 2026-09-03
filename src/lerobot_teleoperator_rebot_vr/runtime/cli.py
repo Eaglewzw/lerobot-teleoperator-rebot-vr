@@ -4,16 +4,131 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import sys
 
 import numpy as np
+import yaml
 
 from ..control.startup import DEFAULT_INITIAL_Q_REFERENCE_RAD
-from ..control.types import CartesianControlStatus, GRIPPER_NAME
+from ..control.types import CartesianControlStatus
+
+
+MODE_CONFIG_FILENAMES = {
+    "pos_vel": "pos_vel.yaml",
+    "mit": "mit.yaml",
+}
+
+
+def _default_mode_config_path(mode: str) -> Path:
+    filename = MODE_CONFIG_FILENAMES[mode]
+    candidates = (
+        Path(__file__).resolve().parents[3] / "config" / filename,
+        Path(sys.prefix)
+        / "share"
+        / "lerobot_teleoperator_rebot_vr"
+        / "config"
+        / filename,
+        Path.cwd() / "config" / filename,
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return candidates[1]
+
+
+def _flatten_mode_config(data: object, path: Path) -> dict[str, object]:
+    if not isinstance(data, dict):
+        raise ValueError(f"mode config must contain a YAML mapping: {path}")
+    flattened: dict[str, object] = {}
+    for key, value in data.items():
+        if isinstance(value, dict):
+            for parameter, parameter_value in value.items():
+                normalized = str(parameter).replace("-", "_")
+                if normalized in flattened:
+                    raise ValueError(
+                        f"duplicate mode config parameter '{normalized}' in {path}"
+                    )
+                flattened[normalized] = parameter_value
+        else:
+            normalized = str(key).replace("-", "_")
+            if normalized in flattened:
+                raise ValueError(
+                    f"duplicate mode config parameter '{normalized}' in {path}"
+                )
+            flattened[normalized] = value
+    return flattened
+
+
+class ModeConfigArgumentParser(argparse.ArgumentParser):
+    """Argument parser whose defaults come from the selected motor-mode YAML."""
+
+    def parse_args(self, args=None, namespace=None):
+        arguments = list(sys.argv[1:] if args is None else args)
+        selector = argparse.ArgumentParser(add_help=False)
+        selector.add_argument(
+            "--motor-control-mode",
+            choices=tuple(MODE_CONFIG_FILENAMES),
+            default="pos_vel",
+        )
+        selector.add_argument("--control-config", type=Path, default=None)
+        selected, _ = selector.parse_known_args(arguments)
+        config_path = (
+            selected.control_config
+            if selected.control_config is not None
+            else _default_mode_config_path(selected.motor_control_mode)
+        )
+
+        try:
+            with config_path.open("r", encoding="utf-8") as config_file:
+                config_defaults = _flatten_mode_config(
+                    yaml.safe_load(config_file), config_path
+                )
+        except (OSError, yaml.YAMLError, ValueError) as exc:
+            self.error(f"cannot load control config '{config_path}': {exc}")
+
+        valid_destinations = {
+            action.dest for action in self._actions if action.dest != "help"
+        }
+        unknown = sorted(set(config_defaults) - valid_destinations)
+        if unknown:
+            self.error(
+                f"unknown parameter(s) in control config '{config_path}': "
+                + ", ".join(unknown)
+            )
+        configured_mode = config_defaults.get("motor_control_mode")
+        if configured_mode != selected.motor_control_mode:
+            self.error(
+                f"control config '{config_path}' is for mode {configured_mode!r}, "
+                f"not {selected.motor_control_mode!r}"
+            )
+
+        original_defaults = {action.dest: action.default for action in self._actions}
+        original_parser_defaults = self._defaults.copy()
+        try:
+            self.set_defaults(**config_defaults)
+            parsed = super().parse_args(arguments, namespace)
+            parsed.control_config = config_path
+            return parsed
+        finally:
+            for action in self._actions:
+                action.default = original_defaults[action.dest]
+            self._defaults.clear()
+            self._defaults.update(original_parser_defaults)
 
 
 def build_parser(description: str | None = None) -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=description)
+    parser = ModeConfigArgumentParser(description=description)
     robot = parser.add_argument_group("robot")
+    robot.add_argument(
+        "--control-config",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "control YAML; defaults to config/pos_vel.yaml or config/mit.yaml "
+            "according to --motor-control-mode"
+        ),
+    )
     robot.add_argument("--robot-port", default="/dev/ttyACM0")
     robot.add_argument("--robot-id", default="rebot_b601_vr")
     robot.add_argument("--can-adapter", choices=("damiao", "socketcan"), default="damiao")
@@ -92,7 +207,7 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
     )
     ik.add_argument("--qp-damping-max", type=float, default=0.1)
     ik.add_argument("--qp-smoothness-cost", type=float, default=0.05)
-    ik.add_argument("--qp-posture-cost", type=float, default=0.05)
+    ik.add_argument("--qp-posture-cost", type=float, default=0.01)
     ik.add_argument(
         "--singularity-threshold",
         type=float,
@@ -123,11 +238,11 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
         "--mit-kp",
         type=float,
         nargs=6,
-        default=(50.0, 50.0, 50.0, 10.0, 10.0, 10.0),
+        default=(36.0, 36.0, 36.0, 10, 10, 10),
         metavar=("Q1", "Q2", "Q3", "Q4", "Q5", "Q6"),
         help=(
             "MIT position gains for q1-q6 "
-            "(default 50 50 50 10 10 10; valid range 0..500)"
+            "(default 45 45 45 10 10 10; valid range 0..500)"
         ),
     )
     ik.add_argument(
@@ -208,41 +323,96 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
     return parser
 
 
+def _invalid_names(
+    values: dict[str, float | None],
+    *,
+    allow_none: bool = False,
+    allow_zero: bool = False,
+) -> list[str]:
+    """Return names whose values are not finite or violate the lower bound."""
+    invalid = []
+    for name, value in values.items():
+        if value is None and allow_none:
+            continue
+        if value is None or not np.isfinite(value):
+            invalid.append(name)
+        elif value < 0.0 or (value == 0.0 and not allow_zero):
+            invalid.append(name)
+    return invalid
+
+
+def _validate_named_values(
+    values: dict[str, float | None],
+    requirement: str,
+    **options: bool,
+) -> None:
+    if invalid := _invalid_names(values, **options):
+        raise ValueError(
+            f"the following parameters must be {requirement}: {', '.join(invalid)}"
+        )
+
+
+def _is_finite_vector_in_range(
+    values: np.ndarray,
+    lower: float | np.ndarray,
+    upper: float | np.ndarray,
+    *,
+    lower_inclusive: bool = True,
+) -> bool:
+    if values.shape != (6,) or not np.all(np.isfinite(values)):
+        return False
+    lower_ok = values >= lower if lower_inclusive else values > lower
+    return bool(np.all(lower_ok) and np.all(values <= upper))
+
+
 def validate_args(args: argparse.Namespace) -> None:
-    positive = {
-        "stale-timeout": args.stale_timeout,
-        "max-joint-speed-rad-s": args.max_joint_speed_rad_s,
-        "max-joint-acceleration-rad-s2": args.max_joint_acceleration_rad_s2,
-        "max-relative-target-deg": args.max_relative_target_deg,
-        "gripper-max-speed-deg-s": args.gripper_max_speed_deg_s,
-        "gripper-max-acceleration-deg-s2": args.gripper_max_acceleration_deg_s2,
-        "initial-move-tolerance-deg": args.initial_move_tolerance_deg,
-        "initial-move-timeout": args.initial_move_timeout, "initial-stall-timeout": args.initial_stall_timeout,
-        "fps": args.fps, "status-rate": args.status_rate,
-    }
-    invalid = [name for name, value in positive.items() if not np.isfinite(value) or value <= 0.0]
-    if invalid:
-        raise ValueError(f"the following parameters must be positive: {', '.join(invalid)}")
-    optional_positive = {
-        "wrist-speed-rad-s": args.wrist_speed_rad_s,
-        "wrist-acceleration-rad-s2": args.wrist_acceleration_rad_s2,
-        "wrist-relative-target-deg": args.wrist_relative_target_deg,
-        "gripper-relative-target-deg": args.gripper_relative_target_deg,
-    }
-    invalid = [name for name, value in optional_positive.items() if value is not None and (not np.isfinite(value) or value <= 0.0)]
-    if invalid:
-        raise ValueError(f"the following parameters must be positive: {', '.join(invalid)}")
-    non_negative = {
-        "position-scale": args.position_scale, "orientation-scale": args.orientation_scale,
-        "position-filter-hz": args.position_filter_hz, "orientation-filter-hz": args.orientation_filter_hz,
-        "position-deadband-m": args.position_deadband_m, "orientation-deadband-deg": args.orientation_deadband_deg,
-        "feedback-fault-settle-time": args.feedback_fault_settle_time,
-    }
-    invalid = [name for name, value in non_negative.items() if not np.isfinite(value) or value < 0.0]
-    if invalid:
-        raise ValueError(f"the following parameters must be non-negative: {', '.join(invalid)}")
+    """Reject unsafe or internally inconsistent command-line settings."""
+    _validate_named_values(
+        {
+            "stale-timeout": args.stale_timeout,
+            "max-joint-speed-rad-s": args.max_joint_speed_rad_s,
+            "max-joint-acceleration-rad-s2": args.max_joint_acceleration_rad_s2,
+            "max-relative-target-deg": args.max_relative_target_deg,
+            "gripper-max-speed-deg-s": args.gripper_max_speed_deg_s,
+            "gripper-max-acceleration-deg-s2": args.gripper_max_acceleration_deg_s2,
+            "initial-move-tolerance-deg": args.initial_move_tolerance_deg,
+            "initial-move-timeout": args.initial_move_timeout,
+            "initial-stall-timeout": args.initial_stall_timeout,
+            "fps": args.fps,
+            "status-rate": args.status_rate,
+        },
+        "positive",
+    )
+
+    _validate_named_values(
+        {
+            "wrist-speed-rad-s": args.wrist_speed_rad_s,
+            "wrist-acceleration-rad-s2": args.wrist_acceleration_rad_s2,
+            "wrist-relative-target-deg": args.wrist_relative_target_deg,
+            "gripper-relative-target-deg": args.gripper_relative_target_deg,
+        },
+        "positive",
+        allow_none=True,
+    )
+
+    _validate_named_values(
+        {
+            "position-scale": args.position_scale,
+            "orientation-scale": args.orientation_scale,
+            "position-filter-hz": args.position_filter_hz,
+            "orientation-filter-hz": args.orientation_filter_hz,
+            "position-deadband-m": args.position_deadband_m,
+            "orientation-deadband-deg": args.orientation_deadband_deg,
+            "feedback-fault-settle-time": args.feedback_fault_settle_time,
+        },
+        "non-negative",
+        allow_zero=True,
+    )
+
     if args.duration < 0.0:
         raise ValueError("duration must be non-negative")
+
+    # QP settings include relationships between values, so validate them together.
     qp_values = (
         args.qp_position_cost,
         args.qp_position_gain,
@@ -261,75 +431,66 @@ def validate_args(args: argparse.Namespace) -> None:
         args.arm_command_lookahead_ms,
         args.wrist_command_lookahead_ms,
     )
-    if (
-        not np.all(np.isfinite(qp_values))
-        or args.qp_position_cost <= 0
-        or args.qp_position_gain <= 0
-        or args.qp_orientation_gain <= 0
-        or args.qp_orientation_cost < 0
-        or args.qp_orientation_cost_min < 0
-        or (
+    qp_valid = (
+        np.all(np.isfinite(qp_values))
+        and args.qp_position_cost > 0
+        and args.qp_position_gain > 0
+        and args.qp_orientation_gain > 0
+        and args.qp_orientation_cost >= 0
+        and args.qp_orientation_cost_min >= 0
+        and not (
             args.qp_orientation_cost > 0
             and args.qp_orientation_cost_min > args.qp_orientation_cost
         )
-        or args.qp_damping < 0
-        or args.qp_damping_max < args.qp_damping
-        or args.qp_smoothness_cost < 0
-        or args.qp_posture_cost < 0
-        or args.singularity_critical_threshold < 0
-        or args.singularity_threshold <= args.singularity_critical_threshold
-        or args.singularity_characteristic_length_m <= 0
-        or args.joint_limit_margin_deg < 0
-        or args.qp_max_solve_time_ms <= 0
-        or args.arm_command_lookahead_ms <= 0
-        or args.wrist_command_lookahead_ms <= 0
-    ):
+        and 0 <= args.qp_damping <= args.qp_damping_max
+        and args.qp_smoothness_cost >= 0
+        and args.qp_posture_cost >= 0
+        and 0 <= args.singularity_critical_threshold < args.singularity_threshold
+        and args.singularity_characteristic_length_m > 0
+        and args.joint_limit_margin_deg >= 0
+        and args.qp_max_solve_time_ms > 0
+        and args.arm_command_lookahead_ms > 0
+        and args.wrist_command_lookahead_ms > 0
+    )
+    if not qp_valid:
         raise ValueError("invalid QP parameters")
+
     if args.feedback_fault_max_consecutive <= 0:
         raise ValueError("feedback-fault-max-consecutive must be positive")
+
+    # Gripper positions use the follower's negative-degree convention.
     if not 0.0 <= args.gripper_torque_ratio <= 1.0:
         raise ValueError("gripper-torque-ratio must be in [0, 1]")
     if not np.all(np.isfinite([args.gripper_open_deg, args.gripper_closed_deg])):
         raise ValueError("gripper open and closed positions must be finite")
     if not -270.0 <= args.gripper_open_deg < args.gripper_closed_deg <= 0.0:
         raise ValueError("gripper positions must satisfy -270 <= open < closed <= 0 degrees")
+
+    # MIT vectors always map to q1..q6 in order.
     mit_kp = np.asarray(args.mit_kp, dtype=np.float64)
     mit_kd = np.asarray(args.mit_kd, dtype=np.float64)
     mit_torque = np.asarray(args.mit_torque_limit_nm, dtype=np.float64)
-    if (
-        mit_kp.shape != (6,)
-        or not np.all(np.isfinite(mit_kp))
-        or np.any(mit_kp < 0.0)
-        or np.any(mit_kp > 500.0)
-    ):
+
+    if not _is_finite_vector_in_range(mit_kp, 0.0, 500.0):
         raise ValueError("MIT Kp must contain six finite values in [0, 500]")
-    if (
-        mit_kd.shape != (6,)
-        or not np.all(np.isfinite(mit_kd))
-        or np.any(mit_kd < 0.0)
-        or np.any(mit_kd > 5.0)
-    ):
+    if not _is_finite_vector_in_range(mit_kd, 0.0, 5.0):
         raise ValueError("MIT Kd must contain six finite values in [0, 5]")
+
     effort_limit = np.array([27.0, 27.0, 27.0, 7.0, 7.0, 7.0])
-    if (
-        mit_torque.shape != (6,)
-        or not np.all(np.isfinite(mit_torque))
-        or np.any(mit_torque <= 0.0)
-        or np.any(mit_torque > effort_limit)
+    if not _is_finite_vector_in_range(
+        mit_torque, 0.0, effort_limit, lower_inclusive=False
     ):
         raise ValueError(
             "MIT torque limits must be positive and no greater than "
             "[27, 27, 27, 7, 7, 7] N*m"
         )
+
     if (
         not np.isfinite(args.mit_gravity_scale)
-        or not 0.0 <= args.mit_gravity_scale <= 2.0
+        or not 0 <= args.mit_gravity_scale <= 2
     ):
         raise ValueError("MIT gravity scale must be in [0, 2]")
-    if (
-        not np.isfinite(args.mit_gravity_ramp_s)
-        or args.mit_gravity_ramp_s < 0.0
-    ):
+    if not np.isfinite(args.mit_gravity_ramp_s) or args.mit_gravity_ramp_s < 0:
         raise ValueError("MIT gravity ramp must be non-negative")
 
 
@@ -345,40 +506,53 @@ def follower_relative_target(arm_relative_target_deg: float, wrist_relative_targ
 
 
 def status_line(status: CartesianControlStatus, sent_action: dict[str, float] | None = None) -> str:
-    ik = "pending" if status.ik_success is None else (f"ok err={status.ik_error_m:.5f}m" if status.ik_success else f"hold {status.ik_reason}")
-    sent_gripper_deg = status.gripper_command_deg if sent_action is None else float(sent_action.get(f"{GRIPPER_NAME}.pos", status.gripper_command_deg))
-    orientation_error = "n/a" if status.orientation_error_deg is None else f"{status.orientation_error_deg:.3f}"
-    position_error = "n/a" if status.tcp_position_error_m is None else f"{status.tcp_position_error_m:.5f}"
-    sigma_min = "n/a" if status.sigma_min is None else f"{status.sigma_min:.5f}"
-    condition = "n/a" if status.condition_number is None else f"{status.condition_number:.1f}"
-    damping = "n/a" if status.current_damping is None else f"{status.current_damping:.6f}"
-    orientation_weight = "n/a" if status.current_orientation_weight is None else f"{status.current_orientation_weight:.4f}"
-    dq_norm = "n/a" if status.dq_norm_rad_s is None else f"{status.dq_norm_rad_s:.3f}"
-    solve_ms = "n/a" if status.qp_solve_time_ms is None else f"{status.qp_solve_time_ms:.3f}"
-    qp_age_ms = "n/a" if status.qp_result_age_ms is None else f"{status.qp_result_age_ms:.3f}"
-    sample_age_ms = "n/a" if status.tracking_sample_age_ms is None else f"{status.tracking_sample_age_ms:.3f}"
-    loop_hz = "n/a" if status.control_loop_hz is None else f"{status.control_loop_hz:.1f}"
-    feedback_ms = "n/a" if status.feedback_read_ms is None else f"{status.feedback_read_ms:.3f}"
-    send_ms = "n/a" if status.send_action_ms is None else f"{status.send_action_ms:.3f}"
-    work_ms = "n/a" if status.cycle_work_ms is None else f"{status.cycle_work_ms:.3f}"
-    tcp_actual = "n/a" if status.tcp_actual_position_m is None else np.array2string(status.tcp_actual_position_m, precision=4)
-    tcp_target = "n/a" if status.tcp_target_position_m is None else np.array2string(status.tcp_target_position_m, precision=4)
-    tcp_rotation_actual = "n/a" if status.tcp_actual_rotvec_rad is None else np.array2string(status.tcp_actual_rotvec_rad, precision=3)
-    tcp_rotation_target = "n/a" if status.tcp_target_rotvec_rad is None else np.array2string(status.tcp_target_rotvec_rad, precision=3)
-    qp_velocity = "n/a" if status.qp_joint_velocity_rad_s is None else np.array2string(status.qp_joint_velocity_rad_s, precision=3)
-    target_linear_velocity = "n/a" if status.target_linear_velocity_m_s is None else np.array2string(status.target_linear_velocity_m_s, precision=3)
-    target_angular_velocity = "n/a" if status.target_angular_velocity_rad_s is None else np.array2string(status.target_angular_velocity_rad_s, precision=3)
-    feedback = "ok" if status.feedback_valid else f"HOLD {status.feedback_fault_count} reason={status.feedback_fault_reason}"
-    trigger_control = "active" if status.gripper_trigger_active else "hold"
-    return (f"state={status.state.value:<7} tracking={status.tracking} ik={ik} feedback={feedback} jobs={status.submitted}/{status.solved}/{status.rejected} A={status.primary_button} home={status.home_requested} B={status.secondary_button} zero={status.zero_requested}\n"
-            f"  trigger={status.trigger:.3f} trigger_control={trigger_control} gripper_deg(actual/target/shaped/sent)={status.gripper_actual_deg:.1f}/{status.gripper_target_deg:.1f}/{status.gripper_command_deg:.1f}/{sent_gripper_deg:.1f}\n"
-            f"  wrist_deg[q4/q5/q6] actual/target/command={np.array2string(status.actual_deg[3:6], precision=1)}/{np.array2string(status.target_deg[3:6], precision=1)}/{np.array2string(status.command_deg[3:6], precision=1)}\n"
-            f"  position_error_m={position_error} orientation_error_deg={orientation_error}\n"
-            f"  qp_mode={status.ik_mode} sigma_min={sigma_min} condition={condition} damping={damping} orientation_weight={orientation_weight} dq_norm_rad_s={dq_norm} solve_ms={solve_ms} result_age_ms={qp_age_ms}\n"
-            f"  timing_hz={loop_hz} sample_age_ms={sample_age_ms} feedback_ms={feedback_ms} send_ms={send_ms} work_ms={work_ms}\n"
-            f"  tcp_position_m actual/target={tcp_actual}/{tcp_target}\n"
-            f"  target_twist linear_m_s/angular_rad_s={target_linear_velocity}/{target_angular_velocity}\n"
-            f"  tcp_rotvec_rad actual/target={tcp_rotation_actual}/{tcp_rotation_target} qp_dq_rad_s={qp_velocity}\n"
-            f"  actual_deg={np.array2string(status.actual_deg, precision=1, suppress_small=True)}\n"
-            f"  target_deg={np.array2string(status.target_deg, precision=1, suppress_small=True)}\n"
-            f"  command_deg={np.array2string(status.command_deg, precision=1, suppress_small=True)}")
+    def vector(values: np.ndarray) -> str:
+        return np.array2string(
+            np.asarray(values), precision=1, suppress_small=True, max_line_width=120
+        )
+
+    if status.ik_success is None:
+        ik = "WAIT"
+    elif status.ik_success:
+        ik = "OK"
+    else:
+        ik = f"HOLD({status.ik_reason})"
+
+    loop = "--" if status.control_loop_hz is None else f"{status.control_loop_hz:.1f}Hz"
+    lines = [
+        (
+            f"[{status.state.value.upper()}] "
+            f"VR={'OK' if status.tracking else '--'}  "
+            f"FB={'OK' if status.feedback_valid else 'FAULT'}  IK={ik}  "
+            f"loop={loop}"
+        )
+    ]
+    if not status.feedback_valid:
+        lines.append(
+            f"! fault #{status.feedback_fault_count}: {status.feedback_fault_reason}"
+        )
+
+    lines.extend(
+        (
+            f"  actual  {vector(status.actual_deg)} deg",
+            f"  target  {vector(status.target_deg)} deg",
+            f"  command {vector(status.command_deg)} deg",
+        )
+    )
+
+    summary = []
+    if status.tcp_position_error_m is not None:
+        summary.append(f"TCP={status.tcp_position_error_m * 1000.0:.1f}mm")
+    if status.orientation_error_deg is not None:
+        summary.append(f"rot={status.orientation_error_deg:.1f}deg")
+    if status.dq_norm_rad_s is not None:
+        summary.append(f"dq={status.dq_norm_rad_s:.2f}rad/s")
+    if status.qp_solve_time_ms is not None:
+        summary.append(f"solve={status.qp_solve_time_ms:.2f}ms")
+    if status.feedback_read_ms is not None:
+        summary.append(f"read={status.feedback_read_ms:.2f}ms")
+    if status.send_action_ms is not None:
+        summary.append(f"send={status.send_action_ms:.2f}ms")
+    if summary:
+        lines.append("  " + "  ".join(summary))
+    return "\n".join(lines)
