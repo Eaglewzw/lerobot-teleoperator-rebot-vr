@@ -324,7 +324,7 @@ class FullBodyQPIKSolver:
 
 def default_urdf_path() -> Path:
     return Path(
-        str(files("lerobot_teleoperator_rebot_vr").joinpath("assets/rebot_b601_dm_kinematics.urdf"))
+        str(files("lerobot_teleoperator_rebot_vr").joinpath("urdf/rebot_b601_dm_kinematics.urdf"))
     )
 
 
@@ -347,7 +347,7 @@ class B601Kinematics:
         self._resource_stack = ExitStack()
         if urdf_path is None:
             resource = files("lerobot_teleoperator_rebot_vr").joinpath(
-                "assets/rebot_b601_dm_kinematics.urdf"
+                "urdf/rebot_b601_dm_kinematics.urdf"
             )
             self.urdf_path = Path(self._resource_stack.enter_context(as_file(resource)))
         else:

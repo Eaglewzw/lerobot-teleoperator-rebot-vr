@@ -15,23 +15,17 @@ from ..vr.controller import make_vr_controller
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--backend",
-        choices=("isaac", "xrobotoolkit_v1"),
-        default="xrobotoolkit_v1",
-    )
     parser.add_argument("--hand", choices=("left", "right"), default="right")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=63901)
     parser.add_argument("--rate", type=float, default=10.0, help="print rate in Hz")
     parser.add_argument("--duration", type=float, default=0.0, help="0 runs until Ctrl-C")
-    parser.add_argument("--no-cloudxr-launch", action="store_true")
     return parser
 
 
 def _format_pose(position: object, quaternion: object) -> str:
     if position is None or quaternion is None:
-        return "not provided by this backend"
+        return "not provided by this sample"
     pos = np.asarray(position, dtype=float)
     quat = np.asarray(quaternion, dtype=float)
     rpy = Rotation.from_quat(quat).as_euler("xyz", degrees=True)
@@ -47,11 +41,9 @@ def main() -> None:
     if args.rate <= 0.0 or args.duration < 0.0:
         raise ValueError("rate must be positive and duration must be non-negative")
     config = RebotVRConfig(
-        vr_backend=args.backend,
         hand_side=args.hand,
         ws_host=args.host,
         ws_port=args.port,
-        auto_launch_cloudxr=not args.no_cloudxr_launch,
     )
     controller = make_vr_controller(config)
     stop = False
@@ -63,13 +55,10 @@ def main() -> None:
     signal.signal(signal.SIGINT, stop_now)
     signal.signal(signal.SIGTERM, stop_now)
 
-    if args.backend == "xrobotoolkit_v1":
-        print(
-            f"Listening for XRoboToolkit V1 on {args.host}:{args.port}; "
-            "start the PICO Tracking sender."
-        )
-    else:
-        print("Starting Isaac Teleop/CloudXR; connect the PICO 4 web client when ready.")
+    print(
+        f"Listening for XRoboToolkit V1 on {args.host}:{args.port}; "
+        "start the PICO Tracking sender."
+    )
 
     controller.connect()
     started = time.monotonic()

@@ -11,7 +11,7 @@ ARM_JOINT_MODEL_NAMES = tuple(f"joint{index}" for index in range(1, 7))
 
 
 def default_dynamics_urdf_path() -> Path:
-    return Path(__file__).resolve().parents[1] / "assets" / "rebot_b601_dm_dynamics.urdf"
+    return Path(__file__).resolve().parents[1] / "urdf" / "rebot_b601_dm_dynamics.urdf"
 
 
 class B601GravityCompensator:

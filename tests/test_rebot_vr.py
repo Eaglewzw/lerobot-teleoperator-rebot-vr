@@ -174,7 +174,5 @@ def test_registered_teleop_rejects_incomplete_or_nonfinite_feedback(tmp_path) ->
 def test_config_validation(tmp_path) -> None:
     with pytest.raises(ValueError, match="threshold"):
         _config(tmp_path, clutch_threshold=0.5, clutch_release_threshold=0.6)
-    with pytest.raises(ValueError, match="vr_backend"):
-        _config(tmp_path, vr_backend="unknown")
     with pytest.raises(ValueError, match="initial_q_rad"):
         _config(tmp_path, initial_q_rad=(0.0, 0.8))

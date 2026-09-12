@@ -32,7 +32,6 @@ DEFAULT_BASE_T_ANCHOR: list[list[float]] = [
 class RebotVRConfig:
     """Runtime and mapping parameters shared by the registered config."""
 
-    vr_backend: str = "xrobotoolkit_v1"
     hand_side: str = "right"
 
     clutch_threshold: float = 0.85
@@ -82,9 +81,6 @@ class RebotVRConfig:
     gripper_open: float = -180.0
     gripper_closed: float = 0.0
 
-    app_name: str = "LeRobot-reBot-VR"
-    auto_launch_cloudxr: bool = True
-    cloudxr_env_file: str | None = None
     base_T_anchor: list[list[float]] = field(
         default_factory=lambda: [row.copy() for row in DEFAULT_BASE_T_ANCHOR]
     )
@@ -95,8 +91,6 @@ class RebotVRConfig:
     ws_port: int = 63901
 
     def __post_init__(self) -> None:
-        if self.vr_backend not in ("isaac", "xrobotoolkit_v1"):
-            raise ValueError("vr_backend must be 'isaac' or 'xrobotoolkit_v1'")
         if self.hand_side not in ("left", "right"):
             raise ValueError("hand_side must be 'left' or 'right'")
         if self.qp_solver not in ("scipy", "osqp"):

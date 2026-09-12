@@ -11,6 +11,7 @@ import yaml
 
 from ..control.startup import DEFAULT_INITIAL_Q_REFERENCE_RAD
 from ..control.types import CartesianControlStatus
+from .shutdown import ShutdownPolicy
 
 
 MODE_CONFIG_FILENAMES = {
@@ -152,16 +153,30 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
     robot.add_argument("--initial-move-tolerance-deg", type=float, default=2.0)
     robot.add_argument("--initial-move-timeout", type=float, default=30.0)
     robot.add_argument("--initial-stall-timeout", type=float, default=5.0)
+    robot.add_argument("--initial-feedback-request-hz", type=float, default=20.0,
+                       help="per-axis explicit feedback request cap during initial motion only; 0 restores unlimited requests")
+    robot.add_argument("--return-to-zero-on-exit", action=argparse.BooleanOptionalAction, default=True,
+                       help="return q1-q6 to zero on normal Ctrl+C before disconnecting; press Ctrl+C again to abort")
+    robot.add_argument("--exit-zero-speed-rad-s", type=float, default=0.5,
+                       help="joint speed cap for Ctrl+C return to zero; also obeys configured arm/wrist limits")
+    robot.add_argument("--exit-zero-acceleration-rad-s2", type=float, default=1.0,
+                       help="joint acceleration cap for Ctrl+C return to zero")
     robot.add_argument("--no-calibrate", action="store_true")
     robot.add_argument("--disable-torque-on-disconnect", action=argparse.BooleanOptionalAction,
                        default=True, help="disable motors when exiting (support the arm before using the default)")
+    robot.add_argument("--disable-attempts", type=int, default=3,
+                       help="VR-owned torque-off rounds for unconfirmed motors (1-10)")
+    robot.add_argument("--disable-interval-s", type=float, default=0.02,
+                       help="spacing after each disable/feedback request, seconds (0, 2]")
+    robot.add_argument("--disable-feedback-wait-s", type=float, default=0.1,
+                       help="feedback observation window after each torque-off round, seconds (0, 2]")
+    robot.add_argument("--disable-request-feedback", action=argparse.BooleanOptionalAction, default=True,
+                       help="request feedback during shutdown; disable for a receive-only comparison with unchanged pacing")
 
     vr = parser.add_argument_group("VR source")
-    vr.add_argument("--backend", choices=("xrobotoolkit_v1", "isaac"), default="xrobotoolkit_v1")
     vr.add_argument("--hand", choices=("left", "right"), default="right")
     vr.add_argument("--host", default="0.0.0.0")
     vr.add_argument("--port", type=int, default=63901)
-    vr.add_argument("--no-cloudxr-launch", action="store_true")
     vr.add_argument("--stale-timeout", type=float, default=0.2)
     vr.add_argument("--grip-press", type=float, default=0.60)
     vr.add_argument("--grip-release", type=float, default=0.40)
@@ -307,6 +322,8 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
 
     runtime = parser.add_argument_group("runtime")
     runtime.add_argument("--fps", type=float, default=90.0)
+    runtime.add_argument("--motor-diagnostics", action="store_true",
+                         help="record final motor API calls and raw cached states; requires --csv-log")
     runtime.add_argument("--duration", type=float, default=0.0, help="0 runs until Ctrl-C")
     runtime.add_argument("--status-rate", type=float, default=5.0)
     runtime.add_argument(
@@ -367,6 +384,10 @@ def _is_finite_vector_in_range(
 
 def validate_args(args: argparse.Namespace) -> None:
     """Reject unsafe or internally inconsistent command-line settings."""
+    ShutdownPolicy(args.disable_attempts, args.disable_interval_s, args.disable_feedback_wait_s,
+                   request_feedback=args.disable_request_feedback)
+    if args.motor_diagnostics and args.csv_log is None:
+        raise ValueError("--motor-diagnostics requires --csv-log")
     _validate_named_values(
         {
             "stale-timeout": args.stale_timeout,
@@ -378,6 +399,8 @@ def validate_args(args: argparse.Namespace) -> None:
             "initial-move-tolerance-deg": args.initial_move_tolerance_deg,
             "initial-move-timeout": args.initial_move_timeout,
             "initial-stall-timeout": args.initial_stall_timeout,
+            "exit-zero-speed-rad-s": args.exit_zero_speed_rad_s,
+            "exit-zero-acceleration-rad-s2": args.exit_zero_acceleration_rad_s2,
             "fps": args.fps,
             "status-rate": args.status_rate,
         },
@@ -404,6 +427,7 @@ def validate_args(args: argparse.Namespace) -> None:
             "position-deadband-m": args.position_deadband_m,
             "orientation-deadband-deg": args.orientation_deadband_deg,
             "feedback-fault-settle-time": args.feedback_fault_settle_time,
+            "initial-feedback-request-hz": args.initial_feedback_request_hz,
         },
         "non-negative",
         allow_zero=True,

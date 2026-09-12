@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import signal
+import sys
 import time
 from dataclasses import replace
 
@@ -16,8 +17,8 @@ from ..control.mit import MITCommandDispatcher
 from ..config_rebot_vr import DEFAULT_BASE_T_ANCHOR, RebotVRConfig
 from ..control.types import ARM_JOINT_NAMES, GRIPPER_NAME, CartesianControlConfig
 from ..diagnostics.logger import CSVLogger, build_csv_row
+from ..diagnostics.motor_io import MotorIODiagnostics
 from ..ik.kinematics import B601Kinematics
-from ..vr.adapter import vr_frame_from_raw_action
 from ..vr.controller import make_vr_controller
 from .cli import (
     build_parser as _parser,
@@ -30,9 +31,12 @@ from .safety import (
     PersistentFeedbackFault,
     feedback_hold_action as _feedback_hold_action,
     move_to_initial_pose as _move_to_initial_pose,
+    move_to_zero_pose as _move_to_zero_pose,
     send_feedback_hold_action as _send_feedback_hold_action,
     settle_persistent_feedback_fault as _settle_persistent_feedback_fault,
 )
+from .shutdown import ManagedFollower, ShutdownPolicy
+from .feedback_requests import limit_startup_feedback_requests
 
 
 logger = logging.getLogger(__name__)
@@ -50,14 +54,12 @@ def main() -> None:
     # cannot leave a powered robot connected without a control loop.
     kinematics = B601Kinematics(args.urdf, "gripper_end")
     vr_config = RebotVRConfig(
-        vr_backend=args.backend,
         hand_side=args.hand,
         clutch_threshold=args.grip_press,
         clutch_release_threshold=args.grip_release,
         stale_timeout=args.stale_timeout,
         ws_host=args.host,
         ws_port=args.port,
-        auto_launch_cloudxr=not args.no_cloudxr_launch,
     )
     wrist_speed = (
         args.wrist_speed_rad_s
@@ -156,7 +158,14 @@ def main() -> None:
         ),
         disable_torque_on_disconnect=args.disable_torque_on_disconnect,
     )
-    robot = RebotB601Follower(robot_config)
+    robot = ManagedFollower(
+        RebotB601Follower(robot_config),
+        policy=ShutdownPolicy(args.disable_attempts, args.disable_interval_s,
+                              args.disable_feedback_wait_s,
+                              request_feedback=args.disable_request_feedback),
+        report_path=(args.csv_log.with_name(args.csv_log.stem + "_shutdown.json")
+                     if args.csv_log is not None else None),
+    )
     if args.motor_control_mode == "mit":
         robot_io = MITCommandDispatcher(
             robot,
@@ -184,9 +193,15 @@ def main() -> None:
     )
 
     stop = False
+    stop_signal = None
+    abort_zero_return = False
 
     def stop_now(_signal_number, _frame) -> None:
-        nonlocal stop
+        nonlocal stop, stop_signal, abort_zero_return
+        if stop or _signal_number == signal.SIGTERM:
+            abort_zero_return = True
+        if not stop:
+            stop_signal = _signal_number
         stop = True
 
     signal.signal(signal.SIGINT, stop_now)
@@ -196,7 +211,10 @@ def main() -> None:
     robot_connected = False
     arm_started = False
     preserve_torque_for_feedback_fault = False
+    feedback_fault_active = False
     print("Support the arm before exit: torque is disabled on disconnect by default.")
+    if args.return_to_zero_on_exit:
+        print("Ctrl+C returns q1-q6 to zero before disconnecting; press Ctrl+C again to abort the return.")
     if args.motor_control_mode == "mit":
         print(
             "Arm motor mode: MIT with q1-q6 velocity targets and Pinocchio "
@@ -226,6 +244,7 @@ def main() -> None:
     else:
         print("Initial-pose motion is disabled; VR control will start from actual feedback.")
     csv_logger = CSVLogger(args.csv_log) if args.csv_log is not None else None
+    motor_diagnostics = None
     if csv_logger is not None:
         print(
             "CSV logging enabled: "
@@ -238,16 +257,24 @@ def main() -> None:
         vr_connected = True
         robot_io.connect(calibrate=not args.no_calibrate)
         robot_connected = True
+        if args.motor_diagnostics:
+            motor_diagnostics = MotorIODiagnostics(args.csv_log, metadata=vars(args).copy())
+            motor_diagnostics.install(robot)
+            print(f"Motor API diagnostics: {motor_diagnostics.output_path}; "
+                  "CAN reception timestamps/counters unavailable in this MotorBridge API.", flush=True)
         if args.move_to_initial:
             assert initial_target_rad is not None
-            reached = _move_to_initial_pose(
-                robot_io,
-                target_rad=initial_target_rad,
-                lower_limit_rad=arm_controller.lower_limit_rad,
-                upper_limit_rad=arm_controller.upper_limit_rad,
-                args=args,
-                should_stop=lambda: stop,
-            )
+            print(f"Initial feedback request cap: {args.initial_feedback_request_hz:g} Hz per motor "
+                  "(0 = unlimited); motion loop frequency unchanged.", flush=True)
+            with limit_startup_feedback_requests(robot, args.initial_feedback_request_hz):
+                reached = _move_to_initial_pose(
+                    robot_io,
+                    target_rad=initial_target_rad,
+                    lower_limit_rad=arm_controller.lower_limit_rad,
+                    upper_limit_rad=arm_controller.upper_limit_rad,
+                    args=args,
+                    should_stop=lambda: stop,
+                )
             if not reached:
                 return
         arm_controller.start()
@@ -264,6 +291,9 @@ def main() -> None:
                 break
             dt_s = loop_started_s - previous_loop_s
             previous_loop_s = loop_started_s
+            if motor_diagnostics is not None:
+                motor_diagnostics.cycle_started_monotonic_ns = loop_started_ns
+                motor_diagnostics.phase = 'loop_feedback'
             feedback_started_ns = time.monotonic_ns()
             try:
                 observation = robot_io.get_observation()
@@ -276,15 +306,16 @@ def main() -> None:
             feedback_finished_ns = time.monotonic_ns()
             feedback_read_ms = (feedback_finished_ns - feedback_started_ns) * 1e-6
             sample = vr_controller.latest_sample()
-            frame = (
-                sample
-                if sample is not None or args.backend == "xrobotoolkit_v1"
-                else vr_frame_from_raw_action(vr_controller.get_action())
-            )
+            frame = sample
             sample_pickup_ns = time.monotonic_ns()
             controller_started_ns = time.monotonic_ns()
             action, status = arm_controller.update(frame, observation, dt_s)
+            feedback_fault_active = not status.feedback_valid
             controller_finished_ns = time.monotonic_ns()
+            if stop and not status.feedback_abort_requested:
+                break
+            if motor_diagnostics is not None:
+                motor_diagnostics.phase = status.state.value
             send_started_ns = time.monotonic_ns()
             if isinstance(robot_io, MITCommandDispatcher):
                 if status.feedback_valid and status.state.value == "active":
@@ -445,6 +476,8 @@ def main() -> None:
             if sleep_s > 0.0:
                 time.sleep(sleep_s)
     finally:
+        if motor_diagnostics is not None:
+            motor_diagnostics.phase = 'shutdown'
         try:
             try:
                 if arm_started:
@@ -455,18 +488,56 @@ def main() -> None:
                         vr_controller.disconnect()
                 finally:
                     try:
-                        if robot_connected or robot_io.is_connected:
-                            if preserve_torque_for_feedback_fault:
-                                print(
-                                    "Persistent feedback fault: retaining motor torque at the "
-                                    "last HOLD command; support the arm before disabling power.",
-                                    flush=True,
-                                )
-                                robot_io.config.disable_torque_on_disconnect = False
-                            robot_io.disconnect()
+                        if robot_connected or robot.needs_cleanup:
+                            try:
+                                # Return only for a normal first SIGINT, never while
+                                # unwinding an error or when feedback is in HOLD.
+                                if (
+                                    args.return_to_zero_on_exit
+                                    and stop_signal == signal.SIGINT
+                                    and not abort_zero_return
+                                    and robot_connected
+                                    and not feedback_fault_active
+                                    and not preserve_torque_for_feedback_fault
+                                    and sys.exc_info()[0] is None
+                                ):
+                                    if motor_diagnostics is not None:
+                                        motor_diagnostics.phase = 'exit_zero'
+                                    try:
+                                        if isinstance(robot_io, MITCommandDispatcher):
+                                            robot_io.set_arm_velocity(None)
+                                        reached = _move_to_zero_pose(
+                                            robot_io,
+                                            lower_limit_rad=arm_controller.lower_limit_rad,
+                                            upper_limit_rad=arm_controller.upper_limit_rad,
+                                            args=args,
+                                            should_stop=lambda: abort_zero_return,
+                                        )
+                                        if not reached:
+                                            logger.warning("Return to zero interrupted; proceeding to disconnect.")
+                                    except Exception:
+                                        logger.exception("Return to zero failed; proceeding to disconnect.")
+                            finally:
+                                if motor_diagnostics is not None:
+                                    motor_diagnostics.phase = 'shutdown'
+                                if preserve_torque_for_feedback_fault:
+                                    print(
+                                        "Persistent feedback fault: retaining motor torque at the "
+                                        "last HOLD command; support the arm before disabling power.",
+                                        flush=True,
+                                    )
+                                    robot_io.config.disable_torque_on_disconnect = False
+                                robot_io.disconnect()
                     finally:
                         kinematics.close()
         finally:
+            if motor_diagnostics is not None:
+                motor_diagnostics.restore()
+                try:
+                    motor_diagnostics.close()
+                    print(f"Motor diagnostics summary: {motor_diagnostics.summary_path}", flush=True)
+                except RuntimeError:
+                    logger.exception("failed to finish motor diagnostics")
             if csv_logger is not None:
                 try:
                     csv_logger.close()

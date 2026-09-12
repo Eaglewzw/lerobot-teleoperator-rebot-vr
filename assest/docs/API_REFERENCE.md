@@ -13,7 +13,6 @@ ControllerSample
 LatestSampleBuffer
 PacketParser
 PacketStreamDecoder
-Pico4VRController
 RebotVRConfig
 RebotVRTeleop
 RebotVRTeleopConfig
@@ -33,10 +32,10 @@ parse_controller_sample
 ### `RebotVRConfig`
 
 ```python
-RebotVRConfig(*, vr_backend="xrobotoolkit_v1", hand_side="right", ...)
+RebotVRConfig(*, hand_side="right", ...)
 ```
 
-集中保存 VR 地址、坐标变换、Grip 阈值、映射滤波、QP 权重、奇异性处理、关节/夹爪限制等参数。`__post_init__()` 会验证枚举、数值范围、六维初始姿态及 `base_T_anchor` 的刚体变换合法性。
+集中保存 VR 地址、坐标变换、Grip 阈值、映射滤波、QP 权重、奇异性处理、关节/夹爪限制等参数。`__post_init__()` 会验证数值范围、六维初始姿态及 `base_T_anchor` 的刚体变换合法性。
 
 相关常量：
 
@@ -144,7 +143,7 @@ V1TrackingSource(host="0.0.0.0", port=63901, *, side="right",
 
 `feed_bytes()` 是无需真实 socket 的测试注入点。源 Tracking 时间戳回退会增加 `stream_epoch` 并清空旧样本。
 
-### VR 后端抽象
+### VR 数据源抽象
 
 ```python
 class VRController(Protocol):
@@ -158,8 +157,7 @@ class VRController(Protocol):
 make_vr_controller(config: RebotVRConfig) -> VRController
 ```
 
-- `xrobotoolkit_v1` 返回 `XRoboToolkitV1Controller`，使用本地 TCP server。
-- `isaac` 返回 `Pico4VRController`，依赖可选 Isaac Teleop/CloudXR 包；其 `latest_sample()` 返回 `None`，通过 `get_action()` 提供 `VRFrame` 形状数据。
+`make_vr_controller()` 返回 `XRoboToolkitV1Controller`，使用本地 TCP server。
 
 `XRoboToolkitV1Controller` 额外公开 `feed_bytes()` 和 `stats()`，便于测试与诊断。
 

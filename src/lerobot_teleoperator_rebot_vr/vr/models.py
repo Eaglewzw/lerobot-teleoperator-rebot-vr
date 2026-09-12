@@ -1,4 +1,4 @@
-"""Compatibility VR frame used by non-V1 pose sources."""
+"""Compatibility VR frame used by action-shaped pose sources."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ class VRFrame:
     """Compatibility sample whose pose is already in the reBot base frame.
 
     The V1 closed-loop path uses :class:`ControllerSample` directly. This type
-    remains the boundary for Isaac Teleop and the registered legacy plugin.
+    remains the boundary for action-shaped inputs in the registered plugin.
     """
 
     grip_pos: np.ndarray

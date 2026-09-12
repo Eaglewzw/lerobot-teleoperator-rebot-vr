@@ -1,92 +1,105 @@
-# reBot B601-DM VR teleoperation: MIT motor mode
-motor_control_mode: mit
+# reBot B601-DM VR 遥操作：MIT 模式 / VR teleoperation: MIT mode
+motor_control_mode: mit  # 机械臂电机控制模式 / Arm motor control mode
 
+# 机器人连接 / Robot connection
 robot:
-  robot_port: /dev/ttyACM0
-  robot_id: rebot_b601_vr
-  can_adapter: damiao
-  dm_serial_baud: 921600
-  no_calibrate: false
+  robot_port: /dev/ttyACM0  # 机器人串口设备 / Robot serial device
+  robot_id: rebot_b601_vr  # LeRobot 机器人实例标识 / LeRobot robot instance ID
+  can_adapter: damiao  # CAN 适配器类型：damiao 或 socketcan / CAN adapter type: damiao or socketcan
+  dm_serial_baud: 921600  # 达妙串口波特率 / Damiao serial baud rate
+  no_calibrate: false  # true 表示启动时跳过校准 / true skips calibration at startup
 
+# VR 数据源 / VR source
 vr_source:
-  backend: xrobotoolkit_v1
-  hand: right
-  host: 0.0.0.0
-  port: 63901
-  no_cloudxr_launch: false
+  hand: right  # 用于遥操作的手柄 / Controller hand used for teleoperation
+  host: 0.0.0.0  # VR 数据监听地址 / VR data listening address
+  port: 63901  # VR 数据监听端口 / VR data listening port
 
+# 笛卡尔位姿映射 / Cartesian pose mapping
 cartesian_mapping:
-  position_scale: 1.0
-  orientation_scale: 1.0
-  position_filter_hz: 0.0
-  orientation_filter_hz: 0.0
-  position_deadband_m: 0.0
-  orientation_deadband_deg: 0.0
+  position_scale: 1.0  # 手柄位移到 TCP 位移的倍率 / Controller-to-TCP translation scale
+  orientation_scale: 1.0  # 手柄旋转到 TCP 旋转的倍率 / Controller-to-TCP rotation scale
+  position_filter_hz: 0.0  # 位置低通截止频率；0 表示关闭 / Position low-pass cutoff; 0 disables it
+  orientation_filter_hz: 0.0  # 姿态低通截止频率；0 表示关闭 / Orientation low-pass cutoff; 0 disables it
+  position_deadband_m: 0.0  # 忽略的小幅位置变化，单位 m / Ignored small position motion in meters
+  orientation_deadband_deg: 0.0  # 忽略的小幅姿态变化，单位 ° / Ignored small orientation motion in degrees
 
+# QP 逆运动学 / QP inverse kinematics
 qp_ik:
-  qp_solver: scipy
-  ik_mode: pose
-  qp_position_cost: 20.0
-  qp_orientation_cost: 2.0
-  qp_orientation_cost_min: 0.05
-  qp_position_gain: 10.0
-  qp_orientation_gain: 8.0
-  qp_damping: 0.001
-  qp_damping_max: 0.1
-  qp_smoothness_cost: 0.05
-  qp_posture_cost: 0.01
-  singularity_threshold: 0.08
-  singularity_critical_threshold: 0.02
-  singularity_characteristic_length_m: 0.3
-  joint_limit_margin_deg: 2.0
-  qp_max_solve_time_ms: 8.0
-  urdf: null
+  qp_solver: scipy  # QP 求解后端：scipy 或 osqp / QP backend: scipy or osqp
+  ik_mode: pose  # pose 跟踪位置和姿态；position 仅跟踪位置 / pose tracks pose; position tracks XYZ only
+  qp_position_cost: 20.0  # TCP 位置任务权重 / TCP position task weight
+  qp_orientation_cost: 2.0  # 正常区域 TCP 姿态任务权重 / TCP orientation task weight in normal regions
+  qp_orientation_cost_min: 0.05  # 奇异区域姿态权重下限 / Minimum orientation weight near singularities
+  qp_position_gain: 10.0  # 位置误差反馈增益，单位 1/s / Position error feedback gain in 1/s
+  qp_orientation_gain: 8.0  # 姿态误差反馈增益，单位 1/s / Orientation error feedback gain in 1/s
+  qp_damping: 0.001  # 远离奇异点时的最小阻尼 / Minimum damping away from singularities
+  qp_damping_max: 0.1  # 严重奇异区域的最大阻尼 / Maximum damping near severe singularities
+  qp_smoothness_cost: 0.05  # 相邻关节速度连续性权重 / Consecutive joint-velocity smoothness weight
+  qp_posture_cost: 0.01  # 回归 Grip 激活时关节构型的权重 / Weight for returning to the posture captured at Grip activation
+  singularity_threshold: 0.08  # 开始增强阻尼的 sigma_min 阈值 / sigma_min threshold where damping adaptation starts
+  singularity_critical_threshold: 0.02  # 启用最大奇异保护的 sigma_min 阈值 / sigma_min threshold for maximum singularity protection
+  singularity_characteristic_length_m: 0.3  # Jacobian 线速度行归一化长度 / Length used to normalize linear Jacobian rows
+  joint_limit_margin_deg: 2.0  # QP 关节限位内缩余量，单位 ° / Inward QP joint-limit margin in degrees
+  qp_max_solve_time_ms: 8.0  # 单次 QP 求解时间上限，单位 ms / Maximum time for one QP solve in milliseconds
+  urdf: null  # 运动学 URDF；null 使用包内模型 / Kinematics URDF; null uses the packaged model
 
+# 运动限制 / Motion limits
 motion_limits:
-  max_joint_speed_rad_s: 5.5
-  max_joint_acceleration_rad_s2: 20.0
-  wrist_speed_rad_s: 12.0
-  wrist_acceleration_rad_s2: 60.0
-  max_relative_target_deg: 20.0
-  wrist_relative_target_deg: 20.0
-  arm_command_lookahead_ms: 50.0
-  wrist_command_lookahead_ms: 25.0
+  max_joint_speed_rad_s: 2.0  # q1-q3 最大速度，单位 rad/s / Maximum q1-q3 speed in rad/s
+  max_joint_acceleration_rad_s2: 8.0  # q1-q3 最大加速度，单位 rad/s² / Maximum q1-q3 acceleration in rad/s²
+  wrist_speed_rad_s: 4.0  # q4-q6 最大速度，单位 rad/s / Maximum q4-q6 speed in rad/s
+  wrist_acceleration_rad_s2: 20.0  # q4-q6 最大加速度，单位 rad/s² / Maximum q4-q6 acceleration in rad/s²
+  max_relative_target_deg: 10.0  # q1-q3 命令与反馈的最大角度差 / Maximum q1-q3 command-to-feedback angle difference
+  wrist_relative_target_deg: 10.0  # q4-q6 命令与反馈的最大角度差 / Maximum q4-q6 command-to-feedback angle difference
+  arm_command_lookahead_ms: 50.0  # q1-q3 速度转位置目标的前视时间 / q1-q3 velocity-to-position lookahead
+  wrist_command_lookahead_ms: 25.0  # q4-q6 速度转位置目标的前视时间 / q4-q6 velocity-to-position lookahead
 
+# MIT 电机控制 / MIT motor control
 mit:
-  mit_kp: [36.0, 36.0, 36.0, 10.0, 10.0, 10.0]
-  mit_kd: [4.0, 4.0, 4.0, 1.0, 1.0, 1.0]
-  mit_torque_limit_nm: [27.0, 27.0, 27.0, 7.0, 7.0, 7.0]
-  mit_gravity_scale: 1.0
-  mit_gravity_ramp_s: 0.0
-  mit_dynamics_urdf: null
+  mit_kp: [25, 10, 30.0, 10.0, 10.0, 10.0]  # q1-q6 位置刚度增益 / q1-q6 position stiffness gains
+  mit_kd: [5.0, 2.0, 2.0, 0.5, 0.5, 0.5]  # q1-q6 速度阻尼增益 / q1-q6 velocity damping gains
+  mit_torque_limit_nm: [27.0, 27.0, 27.0, 7.0, 7.0, 7.0]  # q1-q6 前馈扭矩绝对上限，单位 N·m / q1-q6 absolute feedforward torque limits in N·m
+  mit_gravity_scale: 1.0  # Pinocchio 重力补偿倍率 [0,2] / Pinocchio gravity-compensation multiplier [0,2]
+  mit_gravity_ramp_s: 1.5  # 重力前馈渐入时间；0 表示立即应用 / Gravity feedforward ramp time; 0 applies it immediately
+  mit_dynamics_urdf: null  # 动力学 URDF；null 使用包内模型 / Dynamics URDF; null uses the packaged model
 
+# 启动过程 / Startup
 startup:
-  initial_q: [0.0, 0.8, 0.8, 0.0, 0.0, 0.0]
-  move_to_initial: true
-  initial_move_tolerance_deg: 2.0
-  initial_move_timeout: 30.0
-  initial_stall_timeout: 5.0
+  initial_q: [0.0, 0.8, 0.8, 0.0, 0.0, 0.0]  # 启动参考关节角 q1-q6，单位 rad / Startup reference joint angles q1-q6 in radians
+  move_to_initial: true  # 启动后是否移动到参考姿态 / Whether to move to the reference posture at startup
+  initial_move_tolerance_deg: 3.0  # 到达参考姿态的角度容差 / Angular tolerance for reaching the reference posture
+  initial_move_timeout: 30.0  # 启动移动总超时，单位 s / Overall startup-motion timeout in seconds
+  initial_stall_timeout: 5.0  # 启动移动停滞超时，单位 s / Startup-motion stall timeout in seconds
+  initial_feedback_request_hz: 20.0  # 仅启动移动期间每轴主动反馈请求上限；0 不限频 / Startup-only per-axis request cap; 0 disables
 
+# 夹爪 / Gripper
 gripper:
-  gripper_control_mode: force_pos
-  gripper_torque_ratio: 0.2
-  gripper_open_deg: -180.0
-  gripper_closed_deg: 0.0
-  gripper_max_speed_deg_s: 1200.0
-  gripper_max_acceleration_deg_s2: 5000.0
-  gripper_relative_target_deg: null
+  gripper_control_mode: force_pos  # 夹爪控制模式：force_pos 或 mit / Gripper mode: force_pos or mit
+  gripper_torque_ratio: 0.2  # FORCE_POS 最大夹持力比例 [0,1] / FORCE_POS maximum gripping-force ratio [0,1]
+  gripper_open_deg: -180.0  # Trigger=0 时的夹爪开位 / Gripper open position when Trigger=0
+  gripper_closed_deg: 0.0  # Trigger=1 时的夹爪闭位 / Gripper closed position when Trigger=1
+  gripper_max_speed_deg_s: 1200.0  # 夹爪最大速度，单位 °/s / Maximum gripper speed in deg/s
+  gripper_max_acceleration_deg_s2: 5000.0  # 夹爪最大加速度，单位 °/s² / Maximum gripper acceleration in deg/s²
+  gripper_relative_target_deg: null  # 夹爪命令反馈窗口；null 跟随 max_relative_target_deg / Gripper command-feedback window; null uses max_relative_target_deg
 
+# 安全保护 / Safety
 safety:
-  stale_timeout: 0.2
-  grip_press: 0.60
-  grip_release: 0.40
-  feedback_fault_max_consecutive: 5
-  feedback_fault_settle_time: 0.25
-  disable_torque_on_disconnect: true
+  stale_timeout: 0.2  # VR 数据超过该时间视为失效，单位 s / VR data is stale after this many seconds
+  grip_press: 0.60  # Grip 激活遥操作的按下阈值 / Grip threshold for activating teleoperation
+  grip_release: 0.40  # Grip 退出遥操作的释放阈值 / Grip threshold for releasing teleoperation
+  feedback_fault_max_consecutive: 5  # 连续反馈故障达到该次数后退出 / Exit after this many consecutive feedback faults
+  feedback_fault_settle_time: 0.25  # 故障退出前保持命令的时间，单位 s / Command-hold time before fault exit in seconds
+  disable_torque_on_disconnect: true  # 断开连接时是否关闭电机使能 / Whether to disable motor torque on disconnect
+  disable_attempts: 3  # VR 工程对未确认失能电机的最大发送轮数 / Maximum torque-off rounds
+  disable_interval_s: 0.02  # 每次失能和反馈请求后的间隔，秒 / Spacing after disable and feedback requests
+  disable_feedback_wait_s: 0.1  # 每轮发送后观察反馈的时间，秒 / Feedback observation window per round
 
+# 运行参数 / Runtime
 runtime:
-  fps: 90.0
-  duration: 0.0
-  status_rate: 5.0
-  csv_log: null
-  log_level: INFO
+  motor_diagnostics: false  # 记录最终电机 API 调用与原始缓存状态；需同时设置 csv_log
+  fps: 90.0  # 主控制循环频率，单位 Hz / Main control-loop frequency in Hz
+  duration: 0.0  # 运行时长，单位 s；0 表示持续运行 / Run duration in seconds; 0 runs until stopped
+  status_rate: 5.0  # 终端状态输出频率，单位 Hz / Terminal status update rate in Hz
+  csv_log: null  # CSV 诊断日志路径；null 表示关闭 / CSV diagnostics path; null disables logging
+  log_level: INFO  # 日志级别：DEBUG、INFO 或 WARNING / Log level: DEBUG, INFO, or WARNING

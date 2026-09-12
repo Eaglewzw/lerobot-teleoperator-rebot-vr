@@ -24,11 +24,11 @@ src/lerobot_teleoperator_rebot_vr/
 ├── config_rebot_vr.py                公共配置、关节常量、插件配置注册
 ├── rebot_vr.py                       LeRobot Teleoperator 适配器
 ├── __init__.py                       公共导出及旧模块路径兼容
-├── assets/                           运动学/动力学 URDF
+├── urdf/                             运动学/动力学 URDF
 ├── vr/
 │   ├── xr_v1.py                      XRoboToolkit V1 TCP 分帧与 Tracking 解码
 │   ├── tracking.py                   原始控制器样本和 latest-only 缓冲
-│   ├── controller.py                 VR 后端协议、XRoboToolkit/Isaac 实现
+│   ├── controller.py                 VR 源协议与 XRoboToolkit V1 实现
 │   ├── pose_mapping.py               相对位姿映射与离合状态机
 │   ├── adapter.py                    ControllerSample/VRFrame 统一适配
 │   └── models.py                     VRFrame 数据模型
@@ -87,13 +87,13 @@ PICO 4 / XRoboToolkit APK
               reBot B601-DM（6 轴 + 夹爪）
 ```
 
-主要外部依赖：LeRobot 提供 follower/插件抽象和电机 I/O；Pinocchio（`pin`）读取 URDF 并计算运动学/动力学；SciPy 提供旋转运算和默认 QP 优化；安装 `qp` extra 后可选 OSQP；Isaac VR 后端属于可选依赖。
+主要外部依赖：LeRobot 提供 follower/插件抽象和电机 I/O；Pinocchio（`pin`）读取 URDF 并计算运动学/动力学；SciPy 提供旋转运算和默认 QP 优化；安装 `qp` extra 后可选 OSQP。
 
 ## 4. 运行入口
 
 ### 4.1 推荐真机入口
 
-`rebot-vr-teleoperate` 映射到 `runtime.real:main`。它拥有完整反馈闭环：创建 follower、运动学、VR 后端、控制器和日志器，按周期执行反馈读取、控制更新和命令下发。
+`rebot-vr-teleoperate` 映射到 `runtime.real:main`。它拥有完整反馈闭环：创建 follower、运动学、XRoboToolkit V1 数据源、控制器和日志器，按周期执行反馈读取、控制更新和命令下发。
 
 ### 4.2 LeRobot 插件入口
 

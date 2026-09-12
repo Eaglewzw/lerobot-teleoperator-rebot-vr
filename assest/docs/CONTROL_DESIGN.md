@@ -100,7 +100,7 @@ ACTIVE 实机目标为 `q_actual + dq*lookahead`，q1-q3 默认 50 ms，q4-q6 �
 
 ## 线程与状态
 
-V1/Isaac 接收、latest-only QP worker 和主控制线程分离。主线程独占反馈读取、状态机和 `send_action()`。WAITING、IDLE、ACTIVE、STALE、HOLD 状态机、Grip 重新释放、Tracking 超时、A/B 回位和反馈故障保持原有安全语义。
+XRoboToolkit V1 接收、latest-only QP worker 和主控制线程分离。主线程独占反馈读取、状态机和 `send_action()`。WAITING、IDLE、ACTIVE、STALE、HOLD 状态机、Grip 重新释放、Tracking 超时、A/B 回位和反馈故障保持原有安全语义。
 
 QP 结果携带 `sigma_min`、condition number、当前 damping/orientation weight、位置与
 姿态残差、`dq`、求解时间和请求提交时间。主循环仅按 `--status-rate` 输出目标 twist、

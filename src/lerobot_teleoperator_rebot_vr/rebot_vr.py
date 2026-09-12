@@ -169,8 +169,7 @@ class RebotVRTeleop(Teleoperator):
         self._last_update_s = None
         self._connected = True
         logger.info(
-            "reBot VR connected: backend=%s hand=%s; robot feedback is required",
-            self.config.vr_backend,
+            "reBot VR connected: XRoboToolkit V1 hand=%s; robot feedback is required",
             self.config.hand_side,
         )
 

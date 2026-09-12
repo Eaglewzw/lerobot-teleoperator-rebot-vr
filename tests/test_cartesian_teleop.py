@@ -709,7 +709,6 @@ def test_adaptive_qp_cli_defaults_modes_and_validation() -> None:
         assert option in help_text
 
     defaults = parser.parse_args([])
-    assert defaults.backend == "xrobotoolkit_v1"
     assert defaults.qp_solver == "scipy"
     assert defaults.ik_mode == "pose"
     assert defaults.position_scale == pytest.approx(1.0)

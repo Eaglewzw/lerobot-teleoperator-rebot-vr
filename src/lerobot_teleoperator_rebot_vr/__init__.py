@@ -25,7 +25,7 @@ from .vr import models as _processor
 from .vr import pose_mapping as _pose_mapping
 from .vr import tracking as _tracking
 from .vr import xr_v1 as _xr_v1
-from .vr.controller import Pico4VRController, XRoboToolkitV1Controller
+from .vr.controller import XRoboToolkitV1Controller
 from .vr.models import VRFrame
 from .vr.tracking import (
     ControllerSample,
@@ -68,7 +68,6 @@ __all__ = [
     "LatestSampleBuffer",
     "PacketParser",
     "PacketStreamDecoder",
-    "Pico4VRController",
     "RebotVRConfig",
     "RebotVRTeleop",
     "RebotVRTeleopConfig",
