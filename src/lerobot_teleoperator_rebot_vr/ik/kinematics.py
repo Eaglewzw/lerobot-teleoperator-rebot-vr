@@ -13,6 +13,8 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 from scipy.optimize import minimize
 
+from ..control.joint_command import braking_velocity_bounds
+
 
 NUM_ARM_JOINTS = 6
 
@@ -45,7 +47,9 @@ class FullBodyQPIKSolver:
                  joint_limit_margin_rad: float = 0.03, max_solve_time_ms: float = 8.0,
                  ik_mode: str = "pose", singularity_threshold: float = 0.08,
                  singularity_critical_threshold: float = 0.02,
-                 singularity_characteristic_length_m: float = 0.3) -> None:
+                 singularity_characteristic_length_m: float = 0.3,
+                 joint_lower_limit_rad: object | None = None,
+                 joint_upper_limit_rad: object | None = None) -> None:
         self.kinematics = kinematics
         self.solver = str(solver).lower()
         if self.solver not in ("scipy", "osqp"):
@@ -97,6 +101,30 @@ class FullBodyQPIKSolver:
         self.singularity_characteristic_length_m = float(
             singularity_characteristic_length_m
         )
+        if (joint_lower_limit_rad is None) != (joint_upper_limit_rad is None):
+            raise ValueError("joint lower and upper limits must be provided together")
+        lower = np.asarray(
+            kinematics.lower_position_limit
+            if joint_lower_limit_rad is None
+            else joint_lower_limit_rad,
+            dtype=np.float64,
+        )
+        upper = np.asarray(
+            kinematics.upper_position_limit
+            if joint_upper_limit_rad is None
+            else joint_upper_limit_rad,
+            dtype=np.float64,
+        )
+        if (
+            lower.shape != (NUM_ARM_JOINTS,)
+            or upper.shape != (NUM_ARM_JOINTS,)
+            or not np.all(np.isfinite(lower))
+            or not np.all(np.isfinite(upper))
+            or np.any(lower >= upper)
+        ):
+            raise ValueError("joint limits must be finite ordered six-vectors")
+        self.lower_position_limit = lower.copy()
+        self.upper_position_limit = upper.copy()
 
     def solve(self, *, target_position: object, target_rotation: object, q_actual: object,
               dq_previous: object, dt: float, q_nominal: object,
@@ -133,8 +161,8 @@ class FullBodyQPIKSolver:
         dt = float(dt)
         if not np.isfinite(dt) or dt <= 0.0:
             return self._failure(started, "invalid_dt")
-        lower = np.asarray(self.kinematics.lower_position_limit, dtype=np.float64)
-        upper = np.asarray(self.kinematics.upper_position_limit, dtype=np.float64)
+        lower = self.lower_position_limit
+        upper = self.upper_position_limit
         if np.any(q < lower) or np.any(q > upper):
             return self._failure(started, "feedback_outside_limits")
         # Keep zero feasible while the feedback is in the inward margin; only
@@ -148,12 +176,30 @@ class FullBodyQPIKSolver:
         # envelope; clipping it to acceleration*dt would silently reduce the
         # reachable speed to roughly 2*acceleration*dt.
         dq_constraint_prev = np.clip(dq_prev, -speed, speed)
+        if self.ik_mode == "position":
+            dq_constraint_prev[3:] = 0.0
+        braking_lo, braking_hi = braking_velocity_bounds(
+            q, safe_lo, safe_hi, accel, reaction_time_s=dt
+        )
         lo = np.maximum.reduce(
-            (-speed, (safe_lo - q) / dt, dq_constraint_prev - accel * dt)
+            (
+                -speed,
+                (safe_lo - q) / dt,
+                dq_constraint_prev - accel * dt,
+                braking_lo,
+            )
         )
         hi = np.minimum.reduce(
-            (speed, (safe_hi - q) / dt, dq_constraint_prev + accel * dt)
+            (
+                speed,
+                (safe_hi - q) / dt,
+                dq_constraint_prev + accel * dt,
+                braking_hi,
+            )
         )
+        if self.ik_mode == "position":
+            lo[3:] = 0.0
+            hi[3:] = 0.0
         if np.any(lo > hi + 1e-10):
             return self._failure(started, "infeasible_constraints")
         try:
@@ -264,7 +310,7 @@ class FullBodyQPIKSolver:
         task_jacobian = (
             np.vstack((position_rows, jacobian[3:]))
             if self.ik_mode == "pose"
-            else position_rows
+            else position_rows[:, :3]
         )
         singular_values = np.linalg.svd(task_jacobian, compute_uv=False)
         sigma_min = float(singular_values[-1])

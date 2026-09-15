@@ -94,6 +94,8 @@ class FullBodyQPIKController:
                 ),
                 joint_limit_margin_rad=np.deg2rad(self.config.joint_limit_margin_deg),
                 max_solve_time_ms=self.config.qp_max_solve_time_ms,
+                joint_lower_limit_rad=self.lower_limit_rad,
+                joint_upper_limit_rad=self.upper_limit_rad,
             )
             speed = np.concatenate(
                 (
@@ -286,6 +288,7 @@ class FullBodyQPIKController:
                 )
 
         consumed_before_ns = self.qp.last_result_consumed_monotonic_ns
+        accepted_before_ns = self.qp.last_result_accepted_monotonic_ns
         qp_coordination_started_ns = time.monotonic_ns()
         # Consume a completed result before deciding whether the next request
         # is still in flight. This permits one new QP request per fresh sample.
@@ -295,7 +298,10 @@ class FullBodyQPIKController:
             now_ns=qp_boundary_ns(),
         )
         if qp_goal_rad is not None:
-            self._q_goal_rad = qp_goal_rad
+            if self.config.ik_mode == "position":
+                self._q_goal_rad[:3] = qp_goal_rad[:3]
+            else:
+                self._q_goal_rad = qp_goal_rad
 
         if (
             mapping.state is TeleopState.ACTIVE
@@ -324,7 +330,10 @@ class FullBodyQPIKController:
                     now_ns=qp_boundary_ns(),
                 )
                 if qp_goal_rad is not None:
-                    self._q_goal_rad = qp_goal_rad
+                    if self.config.ik_mode == "position":
+                        self._q_goal_rad[:3] = qp_goal_rad[:3]
+                    else:
+                        self._q_goal_rad = qp_goal_rad
         qp_coordination_finished_ns = time.monotonic_ns()
 
         command_shaping_started_ns = time.monotonic_ns()
@@ -406,6 +415,11 @@ class FullBodyQPIKController:
                 self.qp.last_result_consumed_monotonic_ns is not None
                 and self.qp.last_result_consumed_monotonic_ns
                 != consumed_before_ns
+            ),
+            ik_result_applied_this_cycle=(
+                self.qp.last_result_accepted_monotonic_ns is not None
+                and self.qp.last_result_accepted_monotonic_ns
+                != accepted_before_ns
             ),
             fk_ms=(fk_finished_ns - fk_started_ns) * 1e-6,
             pose_mapping_ms=(mapping_finished_ns - mapping_started_ns) * 1e-6,

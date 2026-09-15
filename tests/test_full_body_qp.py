@@ -190,6 +190,136 @@ def test_position_mode_ignores_orientation_but_keeps_diagnostics() -> None:
     assert np.isfinite(position_result.condition_number)
 
 
+def test_position_mode_hard_locks_wrist_velocity() -> None:
+    class RedundantPositionKinematics:
+        lower_position_limit = np.full(6, -10.0)
+        upper_position_limit = np.full(6, 10.0)
+
+        @staticmethod
+        def tcp_pose_error(q, target_position, target_rotation):
+            del target_rotation
+            q = np.asarray(q, dtype=float)
+            position = q[:3] + q[3:]
+            return np.concatenate(
+                (np.asarray(target_position, dtype=float) - position, np.zeros(3))
+            )
+
+        @staticmethod
+        def tcp_jacobian(q):
+            del q
+            return np.vstack(
+                (
+                    np.hstack((np.eye(3), np.eye(3))),
+                    np.hstack((np.zeros((3, 3)), np.eye(3))),
+                )
+            )
+
+    q = np.zeros(6)
+    result = FullBodyQPIKSolver(
+        RedundantPositionKinematics(),
+        ik_mode="position",
+        damping_min=1e-9,
+        damping_max=1e-9,
+        smoothness_cost=0.0,
+        posture_cost=0.0,
+        max_solve_time_ms=20.0,
+    ).solve(
+        target_position=np.full(3, 0.1),
+        target_rotation=np.eye(3),
+        q_actual=q,
+        dq_previous=np.array([0.0, 0.0, 0.0, 0.5, -0.5, 0.5]),
+        dt=0.01,
+        q_nominal=q,
+        max_joint_speed=np.full(6, 10.0),
+        max_joint_acceleration=np.full(6, 1000.0),
+    )
+
+    assert result.success
+    assert np.all(result.joint_velocity_rad_s[:3] > 0.0)
+    assert result.joint_velocity_rad_s[3:] == pytest.approx(np.zeros(3))
+    assert result.q_target_rad[3:] == pytest.approx(q[3:])
+
+
+def test_qp_velocity_reserves_acceleration_braking_distance() -> None:
+    class LinearKinematics:
+        lower_position_limit = np.full(6, -10.0)
+        upper_position_limit = np.full(6, 10.0)
+
+        @staticmethod
+        def tcp_pose_error(q, target_position, target_rotation):
+            del target_rotation
+            q = np.asarray(q, dtype=float)
+            return np.concatenate(
+                (np.asarray(target_position, dtype=float) - q[:3], np.zeros(3))
+            )
+
+        @staticmethod
+        def tcp_jacobian(q):
+            del q
+            return np.eye(6)
+
+    acceleration = np.full(6, 2.0)
+    q = np.zeros(6)
+    q[0] = 0.9
+    dt = 0.01
+    braking_speed = (
+        np.sqrt(2.0 * acceleration[0] * (1.0 - q[0]))
+        - acceleration[0] * dt
+    )
+    previous = np.zeros(6)
+    previous[0] = braking_speed
+    result = FullBodyQPIKSolver(
+        LinearKinematics(),
+        ik_mode="position",
+        damping_min=1e-9,
+        damping_max=1e-9,
+        smoothness_cost=0.0,
+        posture_cost=0.0,
+        joint_limit_margin_rad=0.0,
+        max_solve_time_ms=20.0,
+        joint_lower_limit_rad=np.full(6, -1.0),
+        joint_upper_limit_rad=np.full(6, 1.0),
+    ).solve(
+        target_position=np.array([10.0, 0.0, 0.0]),
+        target_rotation=np.eye(3),
+        q_actual=q,
+        dq_previous=previous,
+        dt=dt,
+        q_nominal=q,
+        max_joint_speed=np.full(6, 10.0),
+        max_joint_acceleration=acceleration,
+    )
+
+    assert result.success
+    assert result.joint_velocity_rad_s[0] == pytest.approx(braking_speed, abs=1e-7)
+
+    q_next = q + result.joint_velocity_rad_s * dt
+    next_result = FullBodyQPIKSolver(
+        LinearKinematics(),
+        ik_mode="position",
+        damping_min=1e-9,
+        damping_max=1e-9,
+        smoothness_cost=0.0,
+        posture_cost=0.0,
+        joint_limit_margin_rad=0.0,
+        max_solve_time_ms=20.0,
+        joint_lower_limit_rad=np.full(6, -1.0),
+        joint_upper_limit_rad=np.full(6, 1.0),
+    ).solve(
+        target_position=np.array([10.0, 0.0, 0.0]),
+        target_rotation=np.eye(3),
+        q_actual=q_next,
+        dq_previous=result.joint_velocity_rad_s,
+        dt=dt,
+        q_nominal=q,
+        max_joint_speed=np.full(6, 10.0),
+        max_joint_acceleration=acceleration,
+    )
+
+    assert next_result.success
+    assert next_result.joint_velocity_rad_s[0] <= result.joint_velocity_rad_s[0]
+
+
 def test_qp_result_exposes_singularity_and_motion_diagnostics(model) -> None:
     q = np.array([0.0, -0.8, -0.8, 0.0, 0.0, 0.0])
     position, rotation = model.forward_kinematics(q)

@@ -120,9 +120,7 @@ def build_running_status(
             else float(np.linalg.norm(ik_result.joint_velocity_rad_s))
         ),
         qp_joint_velocity_rad_s=(
-            None
-            if ik_result is None or ik_result.joint_velocity_rad_s is None
-            else ik_result.joint_velocity_rad_s.copy()
+            None if ik_result is None else qp.accepted_joint_velocity_rad_s
         ),
         qp_solve_time_ms=finite_ik_diagnostic(ik_result, "solve_time_ms"),
         qp_result_age_ms=qp.last_result_age_ms,

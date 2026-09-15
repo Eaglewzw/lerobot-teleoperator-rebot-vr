@@ -28,6 +28,7 @@ class QPRequestCoordinator:
         self.last_result: IKResult | None = None
         self.last_result_age_ms: float | None = None
         self.last_result_consumed_monotonic_ns: int | None = None
+        self.last_result_accepted_monotonic_ns: int | None = None
         self.target_linear_velocity_m_s = np.zeros(3, dtype=np.float64)
         self.target_angular_velocity_rad_s = np.zeros(3, dtype=np.float64)
 
@@ -51,6 +52,7 @@ class QPRequestCoordinator:
         self._last_submission_ns = None
         self.last_result = None
         self.last_result_consumed_monotonic_ns = None
+        self.last_result_accepted_monotonic_ns = None
         self._last_request_actual_rad = None
         self._last_request_dt_s = None
         self._dq_rad_s.fill(0.0)
@@ -155,16 +157,16 @@ class QPRequestCoordinator:
             else max(0.0, (now_ns - result.submitted_monotonic_ns) * 1e-6)
         )
         if result.solve_time_ms > self.config.qp_max_solve_time_ms:
-            return None
+            return self._reject_matching_result()
         solver_candidate = np.asarray(result.q_target_rad, dtype=np.float64)
         if solver_candidate.shape != (6,) or not np.all(np.isfinite(solver_candidate)):
-            return None
+            return self._reject_matching_result()
         if not result.success:
-            return None
+            return self._reject_matching_result()
         if result.joint_velocity_rad_s is not None:
             qp_velocity = np.asarray(result.joint_velocity_rad_s, dtype=np.float64)
             if qp_velocity.shape != (6,) or not np.all(np.isfinite(qp_velocity)):
-                return None
+                return self._reject_matching_result()
             self._dq_rad_s = qp_velocity.copy()
         elif self._last_request_actual_rad is not None and self._last_request_dt_s is not None:
             self._dq_rad_s = (
@@ -189,7 +191,20 @@ class QPRequestCoordinator:
             q_actual_rad,
             self.upper_limit_rad - margin,
         )
+        self.last_result_accepted_monotonic_ns = now_ns
         return np.clip(candidate, safe_lower, safe_upper)
+
+    def _reject_matching_result(self) -> None:
+        # A failed matching result makes the previous QP velocity stale. The
+        # motor layer performs the physical deceleration; the next QP starts
+        # from zero so an obsolete outward velocity cannot latch constraints.
+        self._dq_rad_s.fill(0.0)
+        return None
+
+    @property
+    def accepted_joint_velocity_rad_s(self) -> np.ndarray:
+        """Return the velocity from the most recently accepted QP result."""
+        return self._dq_rad_s.copy()
 
     def _target_velocity(
         self, target: PoseTarget, frame: VR_SAMPLE_TYPES | None

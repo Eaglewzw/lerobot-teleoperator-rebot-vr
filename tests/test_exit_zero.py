@@ -290,8 +290,8 @@ def test_mit_zero_clears_previous_velocity_target(runner, monkeypatch):
         def __getattr__(self, name):
             return getattr(self.robot, name)
 
-        def set_arm_velocity(self, velocity):
-            assert velocity is None
+        def stop_arm_velocity(self, *, immediate):
+            assert immediate
             runner.events.append("mit_velocity_reset")
 
     monkeypatch.setattr(real, "MITCommandDispatcher", MITProxy)

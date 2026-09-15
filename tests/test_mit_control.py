@@ -27,12 +27,16 @@ class _FakeMotor:
 
 
 class _FakeRobot:
-    def __init__(self, max_relative_target=None) -> None:
+    def __init__(self, max_relative_target=None, joint_limits=None) -> None:
         names = [*ARM_JOINT_NAMES, GRIPPER_NAME]
         self.motor_names = names
         self.motors = {name: _FakeMotor() for name in names}
         self.config = SimpleNamespace(
-            joint_limits={name: (-270.0, 270.0) for name in names},
+            joint_limits=(
+                {name: (-270.0, 270.0) for name in names}
+                if joint_limits is None
+                else joint_limits
+            ),
             max_relative_target=max_relative_target,
             gripper_control_mode="force_pos",
             gripper_mit_kp=8.0,
@@ -46,13 +50,24 @@ class _FakeRobot:
         return dict(self.observation)
 
 
-def _dispatcher(robot: _FakeRobot) -> MITCommandDispatcher:
+def _dispatcher(
+    robot: _FakeRobot,
+    *,
+    acceleration_limit_rad_s2: np.ndarray | None = None,
+    position_lookahead_s: np.ndarray | None = None,
+    velocity_aligned_axes: np.ndarray | None = None,
+    joint_limit_margin_rad: float = 0.0,
+) -> MITCommandDispatcher:
     return MITCommandDispatcher(
         robot,
         kp=np.array([45.0, 44.0, 43.0, 8.0, 7.0, 6.0]),
         kd=np.array([3.0, 2.5, 2.0, 1.0, 0.8, 0.6]),
         torque_limit_nm=np.array([12.0, 12.0, 12.0, 3.0, 3.0, 2.0]),
         arm_velocity_limit_rad_s=np.array([1.0, 1.0, 1.0, 2.0, 2.0, 2.0]),
+        arm_acceleration_limit_rad_s2=acceleration_limit_rad_s2,
+        position_lookahead_s=position_lookahead_s,
+        velocity_aligned_axes=velocity_aligned_axes,
+        joint_limit_margin_rad=joint_limit_margin_rad,
         gravity_ramp_s=0.0,
     )
 
@@ -135,28 +150,154 @@ def test_mit_dispatcher_preserves_relative_target_limit() -> None:
         assert robot.motors[name].mit_calls[0][0] == pytest.approx(np.deg2rad(5.0))
 
 
-def test_mit_velocity_recovers_qp_velocity_then_decays_with_position_error() -> None:
+def test_mit_velocity_target_uses_qp_velocity_directly() -> None:
     dispatcher = _dispatcher(_FakeRobot())
-    lookahead = np.array([0.05, 0.05, 0.05, 0.025, 0.025, 0.025])
     qp_velocity = np.array([0.4, -0.3, 0.2, 0.8, -0.6, 0.4])
-    actual_deg = np.zeros(6)
-    command_deg = np.rad2deg(qp_velocity * lookahead)
 
-    dispatcher.set_arm_velocity_from_position_error(
-        command_deg, actual_deg, lookahead
-    )
+    dispatcher.set_arm_velocity(qp_velocity)
+
+    assert dispatcher.target_velocity_rad_s == pytest.approx(qp_velocity)
     assert dispatcher.desired_velocity_rad_s == pytest.approx(qp_velocity)
 
-    halfway_deg = command_deg * 0.5
-    dispatcher.set_arm_velocity_from_position_error(
-        command_deg, halfway_deg, lookahead
-    )
-    assert dispatcher.desired_velocity_rad_s == pytest.approx(qp_velocity * 0.5)
 
-    dispatcher.set_arm_velocity_from_position_error(
-        command_deg, command_deg, lookahead
+def test_mit_final_velocity_obeys_acceleration_limit(monkeypatch) -> None:
+    now_s = [10.0]
+    monkeypatch.setattr(
+        "lerobot_teleoperator_rebot_vr.control.mit.time.monotonic",
+        lambda: now_s[0],
     )
-    assert dispatcher.desired_velocity_rad_s == pytest.approx(np.zeros(6))
+    acceleration = np.array([2.0, 2.0, 2.0, 4.0, 4.0, 4.0])
+    lookahead = np.array([0.05, 0.05, 0.05, 0.025, 0.025, 0.025])
+    robot = _FakeRobot()
+    dispatcher = _dispatcher(
+        robot,
+        acceleration_limit_rad_s2=acceleration,
+        position_lookahead_s=lookahead,
+    )
+    dispatcher.get_observation()
+    action = {f"{name}.pos": 0.0 for name in (*ARM_JOINT_NAMES, GRIPPER_NAME)}
+    dispatcher.send_action(action)
+
+    dispatcher.set_arm_velocity(np.ones(6))
+    now_s[0] += 0.02
+    dispatcher.send_action(action)
+    assert dispatcher.desired_velocity_rad_s == pytest.approx(
+        [0.04, 0.04, 0.04, 0.08, 0.08, 0.08]
+    )
+    for name in ARM_JOINT_NAMES:
+        assert robot.motors[name].mit_calls[-1][0] == pytest.approx(0.002)
+
+    dispatcher.stop_arm_velocity(immediate=False)
+    now_s[0] += 0.01
+    dispatcher.send_action(action)
+    assert dispatcher.desired_velocity_rad_s == pytest.approx(
+        [0.02, 0.02, 0.02, 0.04, 0.04, 0.04]
+    )
+    for name in ARM_JOINT_NAMES:
+        assert robot.motors[name].mit_calls[-1][0] == pytest.approx(0.001)
+
+
+def test_mit_final_velocity_reserves_braking_distance_without_margin_jump(
+    monkeypatch,
+) -> None:
+    now_s = [10.0]
+    monkeypatch.setattr(
+        "lerobot_teleoperator_rebot_vr.control.mit.time.monotonic",
+        lambda: now_s[0],
+    )
+    names = [*ARM_JOINT_NAMES, GRIPPER_NAME]
+    limits = {name: (-270.0, 270.0) for name in names}
+    limits["wrist_flex"] = (-80.0, 90.0)
+    robot = _FakeRobot(joint_limits=limits)
+    robot.observation["wrist_flex.pos"] = -75.2
+    acceleration = np.full(6, 8.0)
+    dispatcher = _dispatcher(
+        robot,
+        acceleration_limit_rad_s2=acceleration,
+        position_lookahead_s=np.full(6, 0.015),
+        joint_limit_margin_rad=np.deg2rad(2.0),
+    )
+    dispatcher.get_observation()
+    action = {
+        f"{name}.pos": float(robot.observation[f"{name}.pos"])
+        for name in names
+    }
+    dispatcher.send_action(action)
+    velocity = np.zeros(6)
+    velocity[3] = -3.0
+    dispatcher.set_arm_velocity(velocity)
+    for _ in range(10):
+        now_s[0] += 0.05
+        dispatcher.send_action(action)
+
+    braking_speed = np.sqrt(2.0 * 8.0 * np.deg2rad(2.8))
+    position, sent_velocity, *_ = robot.motors["wrist_flex"].mit_calls[-1]
+    assert sent_velocity == pytest.approx(-braking_speed)
+    assert position == pytest.approx(
+        np.deg2rad(-75.2) - braking_speed * 0.015
+    )
+
+    robot.observation["wrist_flex.pos"] = -79.0
+    dispatcher.set_observation(robot.observation)
+    now_s[0] += 0.05
+    dispatcher.send_action(action)
+    position, sent_velocity, *_ = robot.motors["wrist_flex"].mit_calls[-1]
+    assert sent_velocity == pytest.approx(0.0)
+    assert position == pytest.approx(np.deg2rad(-79.0))
+
+
+def test_mit_immediate_stop_restores_explicit_position_command() -> None:
+    robot = _FakeRobot()
+    dispatcher = _dispatcher(
+        robot,
+        position_lookahead_s=np.full(6, 0.05, dtype=np.float64),
+    )
+    dispatcher.get_observation()
+    dispatcher.set_arm_velocity(np.ones(6))
+    dispatcher.stop_arm_velocity(immediate=True)
+    action = {f"{name}.pos": 10.0 for name in (*ARM_JOINT_NAMES, GRIPPER_NAME)}
+
+    dispatcher.send_action(action)
+
+    for name in ARM_JOINT_NAMES:
+        assert robot.motors[name].mit_calls[-1][0] == pytest.approx(np.deg2rad(10.0))
+
+
+def test_mit_position_mode_alignment_preserves_explicit_wrist_hold() -> None:
+    robot = _FakeRobot()
+    dispatcher = _dispatcher(
+        robot,
+        position_lookahead_s=np.full(6, 0.05, dtype=np.float64),
+        velocity_aligned_axes=np.array([True, True, True, False, False, False]),
+    )
+    dispatcher.get_observation()
+    dispatcher.set_arm_velocity(np.array([0.5, 0.0, 0.0, 0.0, 0.0, 0.0]))
+    action = {f"{name}.pos": 10.0 for name in (*ARM_JOINT_NAMES, GRIPPER_NAME)}
+
+    dispatcher.send_action(action)
+
+    assert robot.motors["shoulder_pan"].mit_calls[-1][0] == pytest.approx(0.025)
+    for name in ARM_JOINT_NAMES[3:]:
+        assert robot.motors[name].mit_calls[-1][0] == pytest.approx(np.deg2rad(10.0))
+
+
+def test_mit_velocity_survives_short_result_gap_then_expires(monkeypatch) -> None:
+    now_s = [20.0]
+    monkeypatch.setattr(
+        "lerobot_teleoperator_rebot_vr.control.mit.time.monotonic",
+        lambda: now_s[0],
+    )
+    dispatcher = _dispatcher(_FakeRobot())
+    velocity = np.array([0.4, -0.3, 0.2, 0.8, -0.6, 0.4])
+    dispatcher.set_arm_velocity(velocity)
+
+    now_s[0] += 0.02
+    assert not dispatcher.stop_stale_arm_velocity(0.03)
+    assert dispatcher.target_velocity_rad_s == pytest.approx(velocity)
+
+    now_s[0] += 0.02
+    assert dispatcher.stop_stale_arm_velocity(0.03)
+    assert dispatcher.target_velocity_rad_s == pytest.approx(np.zeros(6))
 
 
 def test_mit_cli_defaults_to_pos_vel_and_validates_protocol_ranges() -> None:
@@ -165,13 +306,13 @@ def test_mit_cli_defaults_to_pos_vel_and_validates_protocol_ranges() -> None:
     mit_defaults = parser.parse_args(["--motor-control-mode", "mit"])
 
     assert defaults.motor_control_mode == "pos_vel"
-    assert mit_defaults.mit_kp == pytest.approx([36.0, 36.0, 36.0, 10.0, 10.0, 10.0])
-    assert mit_defaults.mit_kd == pytest.approx([4.0, 4.0, 4.0, 1.0, 1.0, 1.0])
+    assert mit_defaults.mit_kp == pytest.approx([25.0, 30.0, 30.0, 10.0, 10.0, 10.0])
+    assert mit_defaults.mit_kd == pytest.approx([5.0, 5.0, 4.0, 0.5, 0.5, 0.5])
     assert mit_defaults.mit_torque_limit_nm == pytest.approx(
         [27.0, 27.0, 27.0, 7.0, 7.0, 7.0]
     )
     assert mit_defaults.mit_gravity_scale == pytest.approx(1.0)
-    assert mit_defaults.mit_gravity_ramp_s == pytest.approx(0.0)
+    assert mit_defaults.mit_gravity_ramp_s == pytest.approx(1.5)
     validate_args(defaults)
     validate_args(mit_defaults)
 

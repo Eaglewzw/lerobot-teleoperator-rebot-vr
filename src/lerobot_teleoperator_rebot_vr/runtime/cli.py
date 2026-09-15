@@ -253,18 +253,18 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
         "--mit-kp",
         type=float,
         nargs=6,
-        default=(36.0, 36.0, 36.0, 10, 10, 10),
+        default=(25.0, 30.0, 30.0, 10.0, 10.0, 10.0),
         metavar=("Q1", "Q2", "Q3", "Q4", "Q5", "Q6"),
         help=(
             "MIT position gains for q1-q6 "
-            "(default 45 45 45 10 10 10; valid range 0..500)"
+            "(default 25 30 30 10 10 10; valid range 0..500)"
         ),
     )
     ik.add_argument(
         "--mit-kd",
         type=float,
         nargs=6,
-        default=(4.0, 4.0, 4.0, 1.0, 1.0, 1.0),
+        default=(5.0, 5.0, 4.0, 0.5, 0.5, 0.5),
         metavar=("Q1", "Q2", "Q3", "Q4", "Q5", "Q6"),
         help="MIT velocity gains for q1-q6 (valid range 0..5)",
     )

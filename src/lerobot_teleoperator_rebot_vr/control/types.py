@@ -257,6 +257,7 @@ class CartesianControlStatus:
     ik_sequence: int | None = None
     ik_sample_id: int | None = None
     ik_result_consumed_this_cycle: bool = False
+    ik_result_applied_this_cycle: bool = False
     ik_sample_received_monotonic_ns: int | None = None
     ik_submitted_monotonic_ns: int | None = None
     ik_worker_started_monotonic_ns: int | None = None

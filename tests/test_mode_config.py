@@ -36,7 +36,8 @@ def test_motor_mode_automatically_loads_matching_yaml() -> None:
     assert pos_vel.gripper_max_acceleration_deg_s2 == pytest.approx(5000.0)
     assert mit.control_config.name == "mit.yaml"
     assert mit.motor_control_mode == "mit"
-    assert mit.mit_kp == pytest.approx([36, 36, 36, 10, 10, 10])
+    assert mit.mit_kp == pytest.approx([25, 30, 30, 10, 10, 10])
+    assert mit.mit_kd == pytest.approx([5, 5, 4, 0.5, 0.5, 0.5])
     validate_args(pos_vel)
     validate_args(mit)
 

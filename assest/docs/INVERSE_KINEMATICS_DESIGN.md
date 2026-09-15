@@ -2,7 +2,7 @@
 
 ## 控制点
 
-控制点固定为 URDF 中的 `gripper_end`。每个有效反馈周期使用实际六轴 `q_actual` 计算 TCP 位置、TCP 旋转和 Jacobian。默认 `pose` 模式中六个关节同时参与位置和姿态任务；`position` 模式仍使用六个关节，但只建立三维位置任务。
+控制点固定为 URDF 中的 `gripper_end`。每个有效反馈周期使用实际六轴 `q_actual` 计算 TCP 位置、TCP 旋转和 Jacobian。默认 `pose` 模式中六个关节同时参与位置和姿态任务；`position` 模式只允许 q1-q3 参与三维位置任务，并硬约束 `dq4=dq5=dq6=0`。
 
 ## 目标生成
 
@@ -21,7 +21,7 @@ min ||Wp(Jp*dq-v_p*)||² + ||Wo(Jo*dq-w_o*)||²
   + λq||q_actual+dt*dq-q_nominal||²
 ```
 
-`position` 模式删除第二项，而不是简单地把手柄 `orientation_scale` 设为零。后者仍会要求机械臂保持 Grip 激活瞬间的 TCP 姿态。
+`position` 模式删除第二项并锁定腕部速度，而不是简单地把手柄 `orientation_scale` 设为零。后者在 `pose` 模式下仍会要求机械臂保持 Grip 激活瞬间的 TCP 姿态。
 
 `v_target` 由相邻滤波后目标位置除以 PC `received_monotonic_ns` 间隔得到；`w_target`
 使用世界系 `Log(R_target_new R_target_previous.T) / dt_sample`。Grip 捕获、epoch 变化或无效
@@ -34,9 +34,17 @@ min ||Wp(Jp*dq-v_p*)||² + ||Wo(Jo*dq-w_o*)||²
 q_lower + margin <= q_actual + dt*dq <= q_upper - margin
 -dq_max <= dq <= dq_max
 -ddq_max*dt <= dq-dq_previous <= ddq_max*dt
+-sqrt(2*ddq_max*(q-safe_lower)) <= dq
+dq <= sqrt(2*ddq_max*(safe_upper-q))
+position mode: dq[3:6] = 0
 ```
 
-位置默认权重高于姿态。姿态任务为软目标，目标不可达时平滑饱和。`dq=0` 在反馈位于安全限位内时始终是可行保持解。
+最后两项分别是基于剩余限位距离的制动速度边界和 position 模式的腕部锁定。
+实际制动上限会再预留一个 QP 周期的 `ddq_max*dt` 速度，避免离散周期中制动边界与
+上一帧加速度约束只差一个时间步而变成不可行。匹配当前 generation 的 QP 结果失败时，
+旧 QP 速度历史会清零；MIT 最终发送层仍按真实发送周期完成物理减速。
+QP 使用 follower 的实际软件限位，而不是更宽的 URDF 几何限位。位置默认权重高于姿态。
+姿态任务为软目标，目标不可达时平滑饱和。`dq=0` 在反馈位于安全限位内时始终是可行保持解。
 
 ## Jacobian 与奇异性
 
@@ -52,7 +60,7 @@ J = [J_linear_world; J_angular_world]
 
 ```text
 pose:     J_monitor = [J_linear / characteristic_length; J_angular]
-position: J_monitor =  J_linear / characteristic_length
+position: J_monitor =  J_linear[:,0:3] / characteristic_length
 ```
 
 默认 characteristic length 为 0.30 m。对打包 B601 URDF 的限位内离线采样显示，起始
@@ -88,6 +96,10 @@ orientation_weight = orientation_min +
 q_goal[0:3] = q_actual[0:3] + dq[0:3] * 0.050
 q_goal[3:6] = q_actual[3:6] + dq[3:6] * 0.025
 ```
+
+在 `position` 模式中 `dq[3:6]` 恒为零，因此 q4-q6 保持当前反馈值；上述六轴前视仅在
+`pose` 模式下全部生效。MIT 最终发送层会基于最新反馈再次应用同一制动速度边界，并用
+限幅后的速度重建前视位置，覆盖 QP 求解后到实际发送之间的跟踪误差。
 
 随后裁剪关节限位和 command-feedback 窗口。ACTIVE 不再把该短目标交给通用位置整形器
 重复执行速度/加速度限制；QP 已约束 `dq` 与 `dq-dq_previous`，而 follower 的 POS_VEL
@@ -129,5 +141,6 @@ sequence 和 sample_id，并通过有限值、求解时间和约束检查。失�
 | `--joint-limit-margin-deg` | `2` |
 | `--qp-max-solve-time-ms` | `8` |
 
-两种模式共用同一个反馈式 QP、安全约束、异步 worker 和完整六轴目标发布路径。当前没有
-引入 manipulability task、Placo 或额外依赖。
+两种模式共用同一个反馈式 QP、安全约束、异步 worker 和完整六轴目标发布路径；`pose`
+使用六个活动变量，`position` 仅允许前三个变量非零。当前没有引入 manipulability task、
+Placo 或额外依赖。

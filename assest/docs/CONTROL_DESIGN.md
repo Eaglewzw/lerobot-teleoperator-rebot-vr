@@ -1,8 +1,8 @@
 # reBot B601-DM PICO 4 全六轴 TCP QP 控制设计
 
 生产路径使用 `gripper_end` TCP 的六轴差分 QP IK。默认 `pose` 模式共同跟踪 TCP
-位置和姿态；`position` 模式只跟踪 TCP 位置。两者都以六个关节为变量，不存在腕部
-中心位置 IK、闭式腕部解或部分关节回退路径。
+位置和姿态；`position` 模式只跟踪 TCP 位置，并硬约束 q4-q6 速度为零，只让 q1-q3
+参与求解。不存在腕部中心位置 IK、闭式腕部解或腕部回退路径。
 
 ## 控制流程
 
@@ -25,10 +25,13 @@ Pinocchio 读取独立的固定末端动力学 URDF 计算并经过倍率、可�
 前三轴默认 `Kp=50、Kd=4`，腕部默认 `Kp=10、Kd=1`；重力倍率为 1、渐入为 0。参考工程
 的 `Kp=8、Kd=1` 用于柔顺锁定，不作为带负载目标跟踪的默认值。默认前馈
 限幅为 URDF effort `[27,27,27,7,7,7] N*m`。ACTIVE
-中两种模式都使用 QP `dq` 生成的分轴前视位置目标；MIT 速度目标由最终限幅后的
-`(q_command-q_actual)/lookahead` 得到。新 QP 结果到达时它等于该结果的 `dq`，没有新
-结果时会随位置误差收敛而自然降到零，避免复用旧的非零速度。A/B 回位和非 ACTIVE 六轴
-目标仍使用速度/加速度位置整形，MIT 速度目标在这些状态为零。
+中两种模式都使用 QP `dq` 生成的分轴前视位置目标；position 模式的 q4-q6 `dq` 恒为零。
+MIT 速度目标由最终限幅后的
+QP `dq` 直接给出，不再由位置误差反推。最终发送速度使用真实发送周期和分轴加速度上限
+连续化，并用该最终速度重建 `q_des=q_actual+dq_des*lookahead`，保证 MIT 的位置项与速度项
+方向和幅值一致。短暂缺少新 QP 结果时保持最近的有效速度目标，超过三个控制周期或 QP
+失败后平滑减速到零。A/B 回位、非 ACTIVE 和反馈故障会立即清零 MIT 速度目标，并恢复
+显式位置命令。
 
 启动姿态只整形 q1-q6，夹爪命令原样跟随反馈；进入 VR 主循环取得新鲜 Tracking 后，
 Trigger 目标才参与夹爪整形。第七个夹爪电机不进入六轴动力学模型，默认始终保持独立
@@ -64,7 +67,15 @@ min ||Wp(Jp*dq - vp*)||² + ||Wo(Jo*dq - wo*)||²
 q_lower + margin <= q_actual + dt*dq <= q_upper - margin
 -dq_max <= dq <= dq_max
 -ddq_max*dt <= dq-dq_previous <= ddq_max*dt
+-sqrt(2*ddq_max*(q-safe_lower)) <= dq
+dq <= sqrt(2*ddq_max*(safe_upper-q))
+position mode: dq[3:6] = 0
 ```
+
+QP 的位置边界来自 follower 软件限位。基于剩余距离的速度边界保证仍有足够距离按配置
+加速度制动，并额外预留一个 QP 周期的减速度，避免离散边界与加速度约束互锁。匹配的
+QP 失败结果会清除旧的 QP 速度历史，实际电机速度仍由最终发送层连续减速。position
+模式的等式边界确保腕部不会被位置 Jacobian 当成冗余自由度使用。
 
 目标 twist 使用相邻滤波目标的世界系速度前馈与当前误差比例反馈。目标是软约束，因此
 不可达目标会平滑饱和。QP 异常、超时、非有限结果、旧 generation、旧 sequence 或旧
@@ -79,7 +90,7 @@ FK/Jacobian 均来自 Pinocchio。QP 使用
 
 ```text
 pose:     J_monitor = [J_linear / 0.30; J_angular]
-position: J_monitor = J_linear / 0.30
+position: J_monitor = J_linear[:,0:3] / 0.30
 ```
 
 `sigma_min >= 0.08` 时使用正常参数；`sigma_min <= 0.02` 时使用最大阻尼和最低姿态
@@ -92,6 +103,10 @@ ACTIVE 实机目标为 `q_actual + dq*lookahead`，q1-q3 默认 50 ms，q4-q6 �
 的加速度整形器。异步请求的 `dt` 使用主机单调时钟
 测得的相邻 QP 提交间隔并裁剪到 `[1e-6, 0.05]` s，避免 worker 周期低于控制循环时
 额外损失加速度，也避免暂停后以异常大周期积分。
+
+在 MIT 模式，最终发送层使用最新电机反馈再次计算制动速度边界，再以真实发送周期执行
+速度连续化，并由限幅后的 `dq_des` 重建 `q_des`。这层保护用于覆盖 QP 结果排队、反馈
+跟踪误差和发送延迟，不改变 q4 的 `-80 deg` follower 下限。
 
 每次 Grip 进入 ACTIVE 都把当前实际六轴角同时写入 `q_goal`、`q_command` 和
 `q_nominal`，并把上一命令速度清零。捕获参考的首帧不提交 QP，从下一 Tracking 样本
@@ -134,7 +149,7 @@ tools/                   夹爪与 VR 独立诊断命令
 
 ## 安全层
 
-QP 约束保证 ACTIVE 算法输出的速度与加速度可执行；外层仍执行最终有限值检查、软件
-限位、command-feedback 相对目标保护和 follower 发送。非 ACTIVE 回位路径与 VR 主循环
+QP 约束保证 ACTIVE 算法输出的速度、加速度和限位制动距离可执行；MIT 外层独立复核
+制动速度。其余路径仍执行最终有限值检查、软件限位、command-feedback 相对目标保护和 follower 发送。非 ACTIVE 回位路径与 VR 主循环
 中的夹爪继续执行速度/加速度整形；启动姿态阶段的夹爪仅保持反馈位置。反馈异常进入
 HOLD，禁止使用上一命令冒充实际反馈继续计算。

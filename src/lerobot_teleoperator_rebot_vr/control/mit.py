@@ -11,6 +11,7 @@ from typing import Any
 import numpy as np
 
 from .dynamics import B601GravityCompensator
+from .joint_command import braking_velocity_bounds
 from .types import ARM_JOINT_NAMES, GRIPPER_NAME
 
 
@@ -43,6 +44,10 @@ class MITCommandDispatcher:
         kd: np.ndarray,
         torque_limit_nm: np.ndarray,
         arm_velocity_limit_rad_s: np.ndarray,
+        arm_acceleration_limit_rad_s2: np.ndarray | None = None,
+        position_lookahead_s: np.ndarray | None = None,
+        velocity_aligned_axes: np.ndarray | None = None,
+        joint_limit_margin_rad: float = 0.0,
         gravity_scale: float = 1.0,
         gravity_ramp_s: float = 1.0,
         dynamics_urdf: str | Path | None = None,
@@ -58,6 +63,31 @@ class MITCommandDispatcher:
             "MIT velocity limits",
             allow_zero=False,
         )
+        self.acceleration_limit_rad_s2 = (
+            None
+            if arm_acceleration_limit_rad_s2 is None
+            else _six_vector(
+                arm_acceleration_limit_rad_s2,
+                "MIT acceleration limits",
+                allow_zero=False,
+            )
+        )
+        self.position_lookahead_s = (
+            None
+            if position_lookahead_s is None
+            else _six_vector(
+                position_lookahead_s,
+                "MIT position lookahead",
+                allow_zero=False,
+            )
+        )
+        self.velocity_aligned_axes = (
+            np.ones(6, dtype=bool)
+            if velocity_aligned_axes is None
+            else np.asarray(velocity_aligned_axes, dtype=bool)
+        )
+        if self.velocity_aligned_axes.shape != (6,):
+            raise ValueError("MIT velocity-aligned axes must contain six values")
         if np.any(self.kp > MIT_KP_MAX):
             raise ValueError(f"MIT Kp cannot exceed {MIT_KP_MAX:g}")
         if np.any(self.kd > MIT_KD_MAX):
@@ -71,11 +101,33 @@ class MITCommandDispatcher:
             raise ValueError("MIT gravity scale must be finite and in [0, 2]")
         if not np.isfinite(gravity_ramp_s) or gravity_ramp_s < 0.0:
             raise ValueError("MIT gravity ramp must be finite and non-negative")
+        if not np.isfinite(joint_limit_margin_rad) or joint_limit_margin_rad < 0.0:
+            raise ValueError("MIT joint limit margin must be finite and non-negative")
+        joint_limits_deg = np.asarray(
+            [self.config.joint_limits[name] for name in ARM_JOINT_NAMES],
+            dtype=np.float64,
+        )
+        if (
+            joint_limits_deg.shape != (6, 2)
+            or not np.all(np.isfinite(joint_limits_deg))
+        ):
+            raise ValueError("MIT joint limits must contain six finite pairs")
+        self.joint_lower_limit_rad = np.deg2rad(joint_limits_deg[:, 0])
+        self.joint_upper_limit_rad = np.deg2rad(joint_limits_deg[:, 1])
+        margin = float(joint_limit_margin_rad)
+        self.joint_safe_lower_rad = self.joint_lower_limit_rad + margin
+        self.joint_safe_upper_rad = self.joint_upper_limit_rad - margin
+        if np.any(self.joint_safe_lower_rad >= self.joint_safe_upper_rad):
+            raise ValueError("MIT joint limit margin leaves no usable range")
         self.gravity_scale = float(gravity_scale)
         self.gravity_ramp_s = float(gravity_ramp_s)
         self.gravity = B601GravityCompensator(dynamics_urdf)
         self._latest_observation: dict[str, Any] = {}
+        self._target_velocity_rad_s = np.zeros(6, dtype=np.float64)
         self._desired_velocity_rad_s = np.zeros(6, dtype=np.float64)
+        self._velocity_target_updated_s: float | None = None
+        self._last_velocity_step_s: float | None = None
+        self._velocity_aligned_position = False
         self._first_command_s: float | None = None
         self.last_gravity_torque_nm = np.zeros(6, dtype=np.float64)
         self.last_feedforward_torque_nm = np.zeros(6, dtype=np.float64)
@@ -97,40 +149,42 @@ class MITCommandDispatcher:
 
     def set_arm_velocity(self, velocity_rad_s: np.ndarray | None) -> None:
         if velocity_rad_s is None:
-            self._desired_velocity_rad_s.fill(0.0)
+            self.stop_arm_velocity(immediate=True)
             return
         velocity = np.asarray(velocity_rad_s, dtype=np.float64)
         if velocity.shape != (6,) or not np.all(np.isfinite(velocity)):
-            self._desired_velocity_rad_s.fill(0.0)
+            self.stop_arm_velocity(immediate=True)
             return
-        self._desired_velocity_rad_s = np.clip(
+        self._target_velocity_rad_s = np.clip(
             velocity, -self.velocity_limit_rad_s, self.velocity_limit_rad_s
         )
+        self._velocity_target_updated_s = time.monotonic()
+        self._velocity_aligned_position = self.position_lookahead_s is not None
+        if self.acceleration_limit_rad_s2 is None:
+            self._desired_velocity_rad_s = self._target_velocity_rad_s.copy()
 
-    def set_arm_velocity_from_position_error(
-        self,
-        command_deg: np.ndarray,
-        actual_deg: np.ndarray,
-        lookahead_s: np.ndarray,
-    ) -> None:
-        command = np.asarray(command_deg, dtype=np.float64)
-        actual = np.asarray(actual_deg, dtype=np.float64)
-        lookahead = np.asarray(lookahead_s, dtype=np.float64)
-        if (
-            command.shape != (6,)
-            or actual.shape != (6,)
-            or lookahead.shape != (6,)
-            or not np.all(np.isfinite(command))
-            or not np.all(np.isfinite(actual))
-            or not np.all(np.isfinite(lookahead))
-            or np.any(lookahead <= 0.0)
-        ):
+    def stop_arm_velocity(self, *, immediate: bool) -> None:
+        """Request zero velocity, optionally bypassing the deceleration ramp."""
+        self._target_velocity_rad_s.fill(0.0)
+        self._velocity_target_updated_s = None
+        if immediate:
             self._desired_velocity_rad_s.fill(0.0)
-            return
-        # A newly accepted QP target is q_actual + dq * lookahead, so this
-        # recovers dq on that cycle and naturally decays to zero if no newer
-        # target arrives. That avoids retaining a stale nonzero MIT velocity.
-        self.set_arm_velocity(np.deg2rad(command - actual) / lookahead)
+            self._last_velocity_step_s = None
+            self._velocity_aligned_position = False
+
+    def stop_stale_arm_velocity(self, max_age_s: float) -> bool:
+        """Ramp toward zero after the last accepted QP velocity becomes stale."""
+        if not np.isfinite(max_age_s) or max_age_s <= 0.0:
+            raise ValueError("MIT velocity target max age must be finite and positive")
+        updated_s = self._velocity_target_updated_s
+        if updated_s is None or time.monotonic() - updated_s >= max_age_s:
+            self.stop_arm_velocity(immediate=False)
+            return True
+        return False
+
+    @property
+    def target_velocity_rad_s(self) -> np.ndarray:
+        return self._target_velocity_rad_s.copy()
 
     @property
     def desired_velocity_rad_s(self) -> np.ndarray:
@@ -148,12 +202,47 @@ class MITCommandDispatcher:
             if not np.isfinite(goal_deg[name]):
                 raise ValueError(f"MIT action contains non-finite {name}.pos")
 
+        q_actual_deg = np.array(
+            [self._feedback_deg(name) for name in ARM_JOINT_NAMES],
+            dtype=np.float64,
+        )
+        q_actual_rad = np.deg2rad(q_actual_deg)
+        now_s = time.monotonic()
+        self._advance_arm_velocity(now_s)
+        if self._velocity_aligned_position:
+            assert self.position_lookahead_s is not None
+            safe_lower = np.where(
+                q_actual_rad <= self.joint_safe_lower_rad,
+                q_actual_rad,
+                self.joint_safe_lower_rad,
+            )
+            safe_upper = np.where(
+                q_actual_rad >= self.joint_safe_upper_rad,
+                q_actual_rad,
+                self.joint_safe_upper_rad,
+            )
+            if self.acceleration_limit_rad_s2 is not None:
+                braking_lo, braking_hi = braking_velocity_bounds(
+                    q_actual_rad,
+                    safe_lower,
+                    safe_upper,
+                    self.acceleration_limit_rad_s2,
+                )
+                self._desired_velocity_rad_s = np.clip(
+                    self._desired_velocity_rad_s, braking_lo, braking_hi
+                )
+            aligned_position_rad = np.clip(
+                q_actual_rad
+                + self._desired_velocity_rad_s * self.position_lookahead_s,
+                safe_lower,
+                safe_upper,
+            )
+            aligned_position_deg = np.rad2deg(aligned_position_rad)
+            for index, name in enumerate(ARM_JOINT_NAMES):
+                if self.velocity_aligned_axes[index]:
+                    goal_deg[name] = float(aligned_position_deg[index])
         goal_deg = self._clip_joint_limits(goal_deg)
         goal_deg = self._clip_relative_target(goal_deg)
-        q_actual_rad = np.deg2rad(
-            [self._feedback_deg(name) for name in ARM_JOINT_NAMES]
-        )
-        now_s = time.monotonic()
         if self._first_command_s is None:
             self._first_command_s = now_s
         ramp = (
@@ -180,6 +269,28 @@ class MITCommandDispatcher:
             )
         self._send_gripper(goal_deg[GRIPPER_NAME])
         return {f"{name}.pos": value for name, value in goal_deg.items()}
+
+    def _advance_arm_velocity(self, now_s: float) -> None:
+        if self.acceleration_limit_rad_s2 is None:
+            self._desired_velocity_rad_s = self._target_velocity_rad_s.copy()
+            self._last_velocity_step_s = now_s
+            return
+        previous_s = self._last_velocity_step_s
+        self._last_velocity_step_s = now_s
+        if previous_s is None:
+            return
+        dt_s = float(np.clip(now_s - previous_s, 0.0, 0.05))
+        max_change = self.acceleration_limit_rad_s2 * dt_s
+        velocity_change = np.clip(
+            self._target_velocity_rad_s - self._desired_velocity_rad_s,
+            -max_change,
+            max_change,
+        )
+        self._desired_velocity_rad_s = np.clip(
+            self._desired_velocity_rad_s + velocity_change,
+            -self.velocity_limit_rad_s,
+            self.velocity_limit_rad_s,
+        )
 
     def _feedback_deg(self, name: str) -> float:
         try:

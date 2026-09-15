@@ -3,6 +3,60 @@ from __future__ import annotations
 import numpy as np
 
 
+def braking_velocity_bounds(
+    position: np.ndarray,
+    lower_limit: np.ndarray,
+    upper_limit: np.ndarray,
+    max_acceleration: np.ndarray,
+    reaction_time_s: np.ndarray | float = 0.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return per-axis velocity bounds that preserve stopping distance."""
+
+    position = np.asarray(position, dtype=np.float64)
+    lower_limit = np.asarray(lower_limit, dtype=np.float64)
+    upper_limit = np.asarray(upper_limit, dtype=np.float64)
+    max_acceleration = np.asarray(max_acceleration, dtype=np.float64)
+    try:
+        reaction_time_s = np.broadcast_to(
+            np.asarray(reaction_time_s, dtype=np.float64), position.shape
+        )
+    except ValueError as exc:
+        raise ValueError("braking reaction time must be scalar or match position") from exc
+    if (
+        position.ndim != 1
+        or lower_limit.shape != position.shape
+        or upper_limit.shape != position.shape
+        or max_acceleration.shape != position.shape
+        or not all(
+            np.all(np.isfinite(value))
+            for value in (position, lower_limit, upper_limit, max_acceleration)
+        )
+        or np.any(lower_limit > upper_limit)
+        or np.any(max_acceleration <= 0.0)
+        or not np.all(np.isfinite(reaction_time_s))
+        or np.any(reaction_time_s < 0.0)
+    ):
+        raise ValueError(
+            "braking limits require finite equal vectors, ordered limits, and "
+            "positive acceleration"
+        )
+    distance_to_lower = np.maximum(position - lower_limit, 0.0)
+    distance_to_upper = np.maximum(upper_limit - position, 0.0)
+    velocity_reserve = max_acceleration * reaction_time_s
+    return (
+        -np.maximum(
+            np.sqrt(2.0 * max_acceleration * distance_to_lower)
+            - velocity_reserve,
+            0.0,
+        ),
+        np.maximum(
+            np.sqrt(2.0 * max_acceleration * distance_to_upper)
+            - velocity_reserve,
+            0.0,
+        ),
+    )
+
+
 def bound_position_command_to_feedback(
     command_position: np.ndarray,
     feedback_position: np.ndarray,

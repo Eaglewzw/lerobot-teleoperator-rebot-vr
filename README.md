@@ -133,101 +133,79 @@ rebot-vr-teleoperate \
 
 ### 启动与退出
 
-默认启动参考姿态为 `[0.0, 0.8, 0.8, 0.0, 0.0, 0.0]`，单位为弧度。`--initial-q` 使用 RS 参考约定，程序会将 q2、q3 符号转换为 DM 约定，默认对应 DM 关节角 `[0.0, -0.8, -0.8, 0.0, 0.0, 0.0]`。
-
-如需跳过启动回位，可添加 `--no-move-to-initial`。正常启动后，先完全松开 Grip，再按住进行遥操。退出前支撑机械臂，然后按 `Ctrl+C`；也可用 `--duration 30` 设置运行时长（秒）。
-
-启动反馈停更诊断：当前默认仅在移动到初始姿态期间，将每轴主动反馈请求限制为最多 20 Hz（`--initial-feedback-request-hz 20`），两处读取共用限频；运动发送、接收轮询和缓存读取继续按原频率执行。启动结束、异常或中断后恢复原行为，连接配置、VR 跟随、退出回零及失能不受此限频影响。设为 `0` 可恢复原始不限频行为。该选项不验证反馈新鲜度；实机 20 Hz 对照仍复现后四轴停更，不能视为故障修复，详见[测试记录](assest/docs/MOTOR_SHUTDOWN.md)。
-
-正常按一次 `Ctrl+C` 后，程序先停止 VR 跟随，将六个机械臂关节缓慢返回已标定的 `0°`，夹爪保持回零开始时的位置；反馈满足到位条件后，由 VR 工程管理失能与断开。回零不重新标定电机零点。再次按 `Ctrl+C` 可中止回零并进入断开流程。
-
-退出回零默认轨迹速度上限为 `0.5 rad/s`、加速度上限为 `1.0 rad/s²`，可通过 `--exit-zero-speed-rad-s` 和 `--exit-zero-acceleration-rad-s2` 设置，同时遵守更低的机械臂/腕部限制。POS_VEL 电机速度参数也会临时降低。到位容差、总超时和停滞超时复用 `--initial-move-tolerance-deg`、`--initial-move-timeout`、`--initial-stall-timeout`。回零失败或中止后仍执行断开，是否失能由 `--disable-torque-on-disconnect` 决定。
-
-反馈异常、其他程序异常、`SIGTERM` 和 `--duration` 到时退出不自动回零；主循环持续反馈故障仍使用既有 HOLD 退出策略，启动异常则按 `disable_torque_on_disconnect` 决定是否失能。添加 `--no-return-to-zero-on-exit` 可关闭 Ctrl+C 回零。
-
-失能由本工程的 `ManagedFollower` 直接调用已有 MotorBridge 电机对象，绕过 LeRobot 的 `disconnect()`；不修改 LeRobot 源码，不另开串口。默认对七轴分轮发送，未确认轴最多 3 轮，每次失能/反馈请求后间隔 20 ms，每轮观察反馈 100 ms，然后调用 `close_bus()` 排空传输并释放句柄。退出不调用 `clear_error()`。参数为 `--disable-attempts`、`--disable-interval-s`、`--disable-feedback-wait-s`，也可在模式 YAML 的 `safety` 中设置。
-
-终端逐轴报告发送次数、缓存状态和 `confirmed=YES/NO`；已检查的 MotorBridge 0.3.9 和 0.5.3 的 `get_state()` 均缺少反馈接收时间戳/计数，因此即使缓存为 DISABLED 也只能报告 NO（未确认），不能保证解决已有的后四轴失能异常。设置 `--csv-log /tmp/run.csv` 会额外写入 `/tmp/run_shutdown.json`。设计、退出策略、0.5.3 环境升级与测试说明见 [失能与断开管理](assest/docs/MOTOR_SHUTDOWN.md)。
-
-对照参数 `--no-disable-request-feedback` 只取消退出阶段的主动反馈请求，保留对应等待间隔、七轴连接及接收轮询；默认仍开启请求。2026-09-09 实测中，此对照仍出现后四轴绿灯，不能作为修复方案。实测日志、缓存停止变化的时间及分析边界已记录在上述文档中。
+启动默认移动到初始姿态，`--no-move-to-initial` 跳过。`Ctrl+C` 停止跟踪，q1–q6 回零后断开电机；再次 `Ctrl+C` 跳过回零直接断开。`--duration` 限时运行，退出默认失能电机。
 
 ### 手柄按键
 
 | 按键 | 行为 |
-|---|---|
-| Grip | 按住激活机械臂位姿跟踪，松开保持姿态 |
-| Trigger | 控制夹爪开合；默认松开为 -180°，按到底为 0° |
+| --- | --- |
+| Grip | 按住激活位姿跟踪，松开保持 |
+| Trigger | 夹爪开合（松开=-180°, 按到底=0°），独立于 Grip |
 | A / X | 返回初始姿态 |
-| B / Y | 返回六轴零点并闭合夹爪 |
+| B / Y | 返回六轴零点，闭合夹爪 |
 
-启动或跟踪中断后，必须先完全松开一次 Grip 才能重新激活。
+启动或跟踪中断后需先完全松开 Grip 再按住以重新激活。
 
-夹爪 Trigger 控制独立于 Grip，有新鲜 Tracking 时即可生效；松开 Grip 不会停用夹爪。B / Y 的回零动作不等同于重新标定电机零点。
+## 配置
 
-## 配置与调参
+默认加载 `config/pos_vel.yaml`，`--motor-control-mode mit` 时加载 `config/mit.yaml`。命令行覆盖 YAML。
 
-默认读取 [POS_VEL 配置](config/pos_vel.yaml)；指定 `--motor-control-mode mit` 时读取 [MIT 配置](config/mit.yaml)。显式命令行参数优先于 YAML 配置。自定义配置通过 `--control-config` 指定，其 `motor_control_mode` 必须与命令行选择一致：
+| 常用参数 | 默认值 |
+| --- | --- |
+| `--hand` (left/right) | right |
+| `--position-scale` / `--orientation-scale` | 1.0 |
+| `--ik-mode` (pose/position) | pose |
+| `--qp-solver` (scipy/osqp) | scipy |
+| `--max-joint-speed-rad-s` / `--wrist-speed-rad-s` | 5.5 / 12.0 |
+| `--fps` | 90 |
+| `--stale-timeout` | 0.2 s |
 
-```bash
-rebot-vr-teleoperate \
-  --motor-control-mode mit \
-  --control-config config/mit.yaml \
-  --robot-port /dev/ttyACM0
+完整参数见 `--help`，默认值以 YAML 为准。
+
+`--ik-mode position` 只允许 q1-q3 参与位置 IK，QP 对 q4-q6 施加零速度硬约束，
+因此腕部保持 Grip 激活时的反馈姿态。`pose` 模式仍使用全部六轴跟踪完整 TCP 位姿。
+两种模式都在 QP 和 MIT 最终发送层根据剩余限位距离限制制动速度，不会通过放宽腕部
+软件限位掩盖越界。
+
+### MIT 模式（实验性）
+
+```
+τ = Kp×(q_cmd − q_fb) + Kd×(v_cmd − v_fb) + τ_gravity
 ```
 
-| 常用参数 | 作用 |
-|---|---|
-| `--hand left` / `right` | 选择手柄，默认右手 |
-| `--position-scale` / `--orientation-scale` | 位移 / 旋转映射倍率，默认均为 1.0 |
-| `--ik-mode pose` / `position` | 跟踪完整位姿 / 仅位置，默认 `pose` |
-| `--qp-solver scipy` / `osqp` | QP 后端；OSQP 需安装 `qp` extra |
-| `--max-joint-speed-rad-s` / `--wrist-speed-rad-s` | q1–q3 / q4–q6 速度上限 |
-| `--fps` | 主循环目标频率，默认 90 Hz，实际频率取决于运行耗时 |
-| `--stale-timeout` | VR 数据失效阈值，默认 0.2 秒 |
+MIT 为实验模式，需实机标定重力前馈。详见[控制设计](assest/docs/CONTROL_DESIGN.md)。
 
-完整选项见 `rebot-vr-teleoperate --help`，模式默认值以对应 YAML 为准。
+### MIT 分轴调参
 
-### MIT 增益与重力前馈
-
-MIT 控制近似为：
-
-```text
-扭矩 = Kp × 位置误差 + Kd × 速度误差 + 前馈扭矩
-```
-
-- `Kp` 控制位置刚度：增大后跟随更紧，过大可能震荡；减小后更柔软，但位置误差可能增大。
-- `Kd` 控制速度阻尼：增大通常有助于抑制过冲；过小可能导致摆动。
-- `--mit-kp` 和 `--mit-kd` 均按 q1–q6 顺序接收六个数值。
-- 重力前馈由 Pinocchio 和动力学 URDF 计算，通过 `--mit-gravity-scale` 调整倍率、`--mit-gravity-ramp-s` 设置渐入时间。
-
-MIT 模式的重力前馈仍需实机标定。首次验证应托住机械臂，使用较低增益和重力倍率；可用 `--position-scale 0 --orientation-scale 0 --no-move-to-initial` 关闭 VR 位姿映射并跳过启动回位。这些选项仍会使能电机，Trigger 和回位按键仍可触发动作。详细说明见[参数说明](assest/docs/PARAMETERS.md)与[控制设计](assest/docs/CONTROL_DESIGN.md)。
-
-## 运行日志
-
-记录控制和延迟数据：
+`rebot-mit-tune` 不启动 VR 或 QP，只让指定关节相对当前姿态做小幅、平滑、可重复的往返运动：
 
 ```bash
-rebot-vr-teleoperate \
+rebot-mit-tune \
   --robot-port /dev/ttyACM0 \
-  --csv-log logs/session.csv
+  --joint q1 \
+  --step-deg 5 \
+  --kp 20 \
+  --kd 5 \
+  --csv-log logs/mit_tuning/q1-kp20-kd5.csv
 ```
 
-逐帧数据写入 `logs/session.csv`，关闭日志时生成 `logs/session_latency_summary.csv`。日志包含关节反馈与命令、IK 状态及延迟诊断；默认不记录 CSV。
+只有现场输入 `RUN` 后程序才连接并使能电机；连接后锁存当前姿态并开始测试。退出时保持当前反馈片刻并失能全部电机。详细流程和数据字段见 [MIT 分轴调参](assest/docs/MIT_TUNING.md)。
 
-排查电机停住、突然运动或跟随异常时，在上述命令后添加 `--motor-diagnostics`，额外生成 `_motor_io.csv` 和 `_motor_summary.json`，记录最终电机 API 参数、原始缓存状态及统计。真实 CAN 接收时间/计数当前不可用；使用方法和字段限制见[电机诊断说明](assest/docs/MOTOR_DIAGNOSTICS.md)。
+## 诊断
+
+```bash
+rebot-vr-teleoperate --csv-log logs/session.csv            # 逐帧关节/IK/延迟
+rebot-vr-teleoperate --csv-log logs/session.csv --motor-diagnostics  # 含电机 I/O
+```
 
 ## 夹爪测试
-
-绕过 VR 单独验证夹爪：
 
 ```bash
 rebot-gripper-test --robot-port /dev/ttyACM0 --target-deg -100
 rebot-gripper-test --robot-port /dev/ttyACM0 --target-deg 0
 ```
 
-测试期间六个机械臂关节会保持在实际反馈位置。
-
-安装测试依赖后，在项目根目录运行：
+## 测试
 
 ```bash
 python -m pytest -q
@@ -237,10 +215,10 @@ python -m pytest -q
 
 - [系统架构](assest/docs/ARCHITECTURE.md)
 - [核心模块 API](assest/docs/API_REFERENCE.md)
-- [电机发送与反馈诊断](assest/docs/MOTOR_DIAGNOSTICS.md)
-- [参数说明](assest/docs/PARAMETERS.md)
 - [控制设计](assest/docs/CONTROL_DESIGN.md)
+- [MIT 分轴调参](assest/docs/MIT_TUNING.md)
 - [逆解设计](assest/docs/INVERSE_KINEMATICS_DESIGN.md)
+- [参数说明](assest/docs/PARAMETERS.md)
 
 ## 许可证
 

@@ -63,6 +63,9 @@ startup:
   initial_move_timeout: 30.0  # 启动移动总超时，单位 s / Overall startup-motion timeout in seconds
   initial_stall_timeout: 5.0  # 启动移动停滞超时，单位 s / Startup-motion stall timeout in seconds
   initial_feedback_request_hz: 20.0  # 仅启动移动期间每轴主动反馈请求上限；0 不限频 / Startup-only per-axis request cap; 0 disables
+  return_to_zero_on_exit: true  # Ctrl+C 后先将 q1-q6 平滑回零 / Return q1-q6 smoothly to zero after Ctrl+C
+  exit_zero_speed_rad_s: 0.5  # 退出回零速度上限，单位 rad/s / Exit-return speed limit in rad/s
+  exit_zero_acceleration_rad_s2: 1.0  # 退出回零加速度上限，单位 rad/s² / Exit-return acceleration limit in rad/s²
 
 # 夹爪 / Gripper
 gripper:
@@ -85,6 +88,7 @@ safety:
   disable_attempts: 3  # VR 工程对未确认失能电机的最大发送轮数 / Maximum torque-off rounds
   disable_interval_s: 0.02  # 每次失能和反馈请求后的间隔，秒 / Spacing after disable and feedback requests
   disable_feedback_wait_s: 0.1  # 每轮发送后观察反馈的时间，秒 / Feedback observation window per round
+  disable_request_feedback: true  # 失能确认期间主动请求电机反馈 / Request motor feedback while confirming torque-off
 
 # 运行参数 / Runtime
 runtime:

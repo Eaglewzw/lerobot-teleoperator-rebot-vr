@@ -19,9 +19,9 @@ vr_source:
 cartesian_mapping:
   position_scale: 1.0  # 手柄位移到 TCP 位移的倍率 / Controller-to-TCP translation scale
   orientation_scale: 1.0  # 手柄旋转到 TCP 旋转的倍率 / Controller-to-TCP rotation scale
-  position_filter_hz: 0.0  # 位置低通截止频率；0 表示关闭 / Position low-pass cutoff; 0 disables it
+  position_filter_hz: 4.0  # 位置低通截止频率；0 表示关闭 / Position low-pass cutoff; 0 disables it
   orientation_filter_hz: 0.0  # 姿态低通截止频率；0 表示关闭 / Orientation low-pass cutoff; 0 disables it
-  position_deadband_m: 0.0  # 忽略的小幅位置变化，单位 m / Ignored small position motion in meters
+  position_deadband_m: 0.0015  # 忽略的小幅位置变化，单位 m / Ignored small position motion in meters
   orientation_deadband_deg: 0.0  # 忽略的小幅姿态变化，单位 ° / Ignored small orientation motion in degrees
 
 # QP 逆运动学 / QP inverse kinematics
@@ -31,7 +31,7 @@ qp_ik:
   qp_position_cost: 20.0  # TCP 位置任务权重 / TCP position task weight
   qp_orientation_cost: 2.0  # 正常区域 TCP 姿态任务权重 / TCP orientation task weight in normal regions
   qp_orientation_cost_min: 0.05  # 奇异区域姿态权重下限 / Minimum orientation weight near singularities
-  qp_position_gain: 10.0  # 位置误差反馈增益，单位 1/s / Position error feedback gain in 1/s
+  qp_position_gain: 4.0  # 位置误差反馈增益，单位 1/s / Position error feedback gain in 1/s
   qp_orientation_gain: 8.0  # 姿态误差反馈增益，单位 1/s / Orientation error feedback gain in 1/s
   qp_damping: 0.001  # 远离奇异点时的最小阻尼 / Minimum damping away from singularities
   qp_damping_max: 0.1  # 严重奇异区域的最大阻尼 / Maximum damping near severe singularities
@@ -47,7 +47,7 @@ qp_ik:
 # 运动限制 / Motion limits
 motion_limits:
   max_joint_speed_rad_s: 2.0  # q1-q3 最大速度，单位 rad/s / Maximum q1-q3 speed in rad/s
-  max_joint_acceleration_rad_s2: 8.0  # q1-q3 最大加速度，单位 rad/s² / Maximum q1-q3 acceleration in rad/s²
+  max_joint_acceleration_rad_s2: 6.0  # q1-q3 最大加速度，单位 rad/s² / Maximum q1-q3 acceleration in rad/s²
   wrist_speed_rad_s: 4.0  # q4-q6 最大速度，单位 rad/s / Maximum q4-q6 speed in rad/s
   wrist_acceleration_rad_s2: 20.0  # q4-q6 最大加速度，单位 rad/s² / Maximum q4-q6 acceleration in rad/s²
   max_relative_target_deg: 10.0  # q1-q3 命令与反馈的最大角度差 / Maximum q1-q3 command-to-feedback angle difference
@@ -57,8 +57,8 @@ motion_limits:
 
 # MIT 电机控制 / MIT motor control
 mit:
-  mit_kp: [25, 10, 30.0, 10.0, 10.0, 10.0]  # q1-q6 位置刚度增益 / q1-q6 position stiffness gains
-  mit_kd: [5.0, 2.0, 2.0, 0.5, 0.5, 0.5]  # q1-q6 速度阻尼增益 / q1-q6 velocity damping gains
+  mit_kp: [25.0, 30.0, 30.0, 10.0, 10.0, 10.0]  # q1-q6 位置刚度增益 / q1-q6 position stiffness gains
+  mit_kd: [5.0, 5.0, 4.0, 0.5, 0.5, 0.5]  # q1-q6 速度阻尼增益 / q1-q6 velocity damping gains
   mit_torque_limit_nm: [27.0, 27.0, 27.0, 7.0, 7.0, 7.0]  # q1-q6 前馈扭矩绝对上限，单位 N·m / q1-q6 absolute feedforward torque limits in N·m
   mit_gravity_scale: 1.0  # Pinocchio 重力补偿倍率 [0,2] / Pinocchio gravity-compensation multiplier [0,2]
   mit_gravity_ramp_s: 1.5  # 重力前馈渐入时间；0 表示立即应用 / Gravity feedforward ramp time; 0 applies it immediately
@@ -72,6 +72,9 @@ startup:
   initial_move_timeout: 30.0  # 启动移动总超时，单位 s / Overall startup-motion timeout in seconds
   initial_stall_timeout: 5.0  # 启动移动停滞超时，单位 s / Startup-motion stall timeout in seconds
   initial_feedback_request_hz: 20.0  # 仅启动移动期间每轴主动反馈请求上限；0 不限频 / Startup-only per-axis request cap; 0 disables
+  return_to_zero_on_exit: true  # Ctrl+C 后先将 q1-q6 平滑回零 / Return q1-q6 smoothly to zero after Ctrl+C
+  exit_zero_speed_rad_s: 0.5  # 退出回零速度上限，单位 rad/s / Exit-return speed limit in rad/s
+  exit_zero_acceleration_rad_s2: 1.0  # 退出回零加速度上限，单位 rad/s² / Exit-return acceleration limit in rad/s²
 
 # 夹爪 / Gripper
 gripper:
@@ -94,6 +97,7 @@ safety:
   disable_attempts: 3  # VR 工程对未确认失能电机的最大发送轮数 / Maximum torque-off rounds
   disable_interval_s: 0.02  # 每次失能和反馈请求后的间隔，秒 / Spacing after disable and feedback requests
   disable_feedback_wait_s: 0.1  # 每轮发送后观察反馈的时间，秒 / Feedback observation window per round
+  disable_request_feedback: true  # 失能确认期间主动请求电机反馈 / Request motor feedback while confirming torque-off
 
 # 运行参数 / Runtime
 runtime:

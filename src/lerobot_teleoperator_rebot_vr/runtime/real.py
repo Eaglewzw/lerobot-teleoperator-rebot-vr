@@ -179,6 +179,27 @@ def main() -> None:
                 ],
                 dtype=np.float64,
             ),
+            arm_acceleration_limit_rad_s2=np.array(
+                [
+                    *([args.max_joint_acceleration_rad_s2] * 3),
+                    *([wrist_acceleration] * 3),
+                ],
+                dtype=np.float64,
+            ),
+            position_lookahead_s=np.array(
+                [
+                    *([control_config.arm_command_lookahead_s] * 3),
+                    *([control_config.wrist_command_lookahead_s] * 3),
+                ],
+                dtype=np.float64,
+            ),
+            velocity_aligned_axes=np.array(
+                [True, True, True, *([args.ik_mode == "pose"] * 3)],
+                dtype=bool,
+            ),
+            joint_limit_margin_rad=np.deg2rad(
+                control_config.joint_limit_margin_deg
+            ),
             gravity_scale=args.mit_gravity_scale,
             gravity_ramp_s=args.mit_gravity_ramp_s,
             dynamics_urdf=args.mit_dynamics_urdf,
@@ -283,6 +304,7 @@ def main() -> None:
         started_s = time.monotonic()
         previous_loop_s = started_s
         next_status_s = started_s
+        mit_velocity_max_age_s = max(3.0 / args.fps, 0.03)
         previous_command_send_finished_ns: int | None = None
         while not stop:
             loop_started_ns = time.monotonic_ns()
@@ -318,20 +340,17 @@ def main() -> None:
                 motor_diagnostics.phase = status.state.value
             send_started_ns = time.monotonic_ns()
             if isinstance(robot_io, MITCommandDispatcher):
-                if status.feedback_valid and status.state.value == "active":
-                    robot_io.set_arm_velocity_from_position_error(
-                        status.command_deg[:6],
-                        status.actual_deg[:6],
-                        np.array(
-                            [
-                                *([control_config.arm_command_lookahead_s] * 3),
-                                *([control_config.wrist_command_lookahead_s] * 3),
-                            ],
-                            dtype=np.float64,
-                        ),
-                    )
+                if not status.feedback_valid or status.state.value != "active":
+                    robot_io.stop_arm_velocity(immediate=True)
+                elif (
+                    status.ik_result_applied_this_cycle
+                    and status.qp_joint_velocity_rad_s is not None
+                ):
+                    robot_io.set_arm_velocity(status.qp_joint_velocity_rad_s)
+                elif status.ik_result_consumed_this_cycle:
+                    robot_io.stop_arm_velocity(immediate=False)
                 else:
-                    robot_io.set_arm_velocity(None)
+                    robot_io.stop_stale_arm_velocity(mit_velocity_max_age_s)
             if action is None:
                 sent_action = None
             elif status.feedback_valid:
@@ -505,7 +524,7 @@ def main() -> None:
                                         motor_diagnostics.phase = 'exit_zero'
                                     try:
                                         if isinstance(robot_io, MITCommandDispatcher):
-                                            robot_io.set_arm_velocity(None)
+                                            robot_io.stop_arm_velocity(immediate=True)
                                         reached = _move_to_zero_pose(
                                             robot_io,
                                             lower_limit_rad=arm_controller.lower_limit_rad,

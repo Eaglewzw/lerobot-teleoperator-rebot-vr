@@ -148,7 +148,7 @@ action = {
 }
 ```
 
-默认 `POS_VEL` 路径调用 follower 的 `send_action()`；实验性 MIT 路径由 `MITCommandDispatcher` 将位置误差转换为期望速度，并叠加 `B601GravityCompensator.gravity_torque()` 的前馈力矩。机器人 I/O 在主线程内同步完成，因此每个控制周期都使用对应的最新反馈。
+默认 `POS_VEL` 路径调用 follower 的 `send_action()`；实验性 MIT 路径由 `MITCommandDispatcher` 接收已采用 QP 结果的关节速度，按真实发送周期执行最终加速度限制，并从最终速度重建一致的前视位置，再叠加 `B601GravityCompensator.gravity_torque()` 的前馈力矩。机器人 I/O 在主线程内同步完成，因此每个控制周期都使用对应的最新反馈。
 
 ### 5.4 主循环到诊断线程
 

@@ -30,8 +30,8 @@ rebot-vr-teleoperate --motor-control-mode mit --control-config config/mit.yaml
 | `--gripper-max-acceleration-deg-s2` | `5000` | 推荐 ≤50000 | 夹爪加速度上限（°/s²） |
 | `--gripper-torque-ratio` | `0.2` | `1.0` | FORCE_POS 最大夹持力比例；CLI 强制 [0, 1] |
 | `--motor-control-mode` | `pos_vel` | `pos_vel/mit` | q1-q6 底层模式；MIT 由插件发送速度目标和重力前馈 |
-| `--mit-kp` | `36 36 36 10 10 10` | 每轴 `500` | q1-q3 与 q4-q6 的 MIT 位置增益 |
-| `--mit-kd` | `4 4 4 1 1 1` | 每轴 `5` | q1-q3 与 q4-q6 的 MIT 速度增益 |
+| `--mit-kp` | `25 30 30 10 10 10` | 每轴 `500` | q1-q6 实机整定后的 MIT 位置增益 |
+| `--mit-kd` | `5 5 4 0.5 0.5 0.5` | 每轴 `5` | q1-q6 实机整定后的 MIT 速度增益 |
 | `--mit-torque-limit-nm` | `27 27 27 7 7 7` | URDF effort | 重力前馈项绝对限幅（N·m），不是 PD 总扭矩限幅 |
 | `--mit-gravity-scale` | `1.0` | `2.0` | Pinocchio 重力项倍率；CLI 强制 [0, 2] |
 | `--mit-gravity-ramp-s` | `0.0` | — | 首条 MIT 命令后重力前馈渐入时间；0 表示与参考控制器相同，直接应用 `g(q)` |

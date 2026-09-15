@@ -249,6 +249,70 @@ def test_closed_loop_starts_from_actual_pose_and_atomically_applies_arm_and_wris
     assert status.qp_joint_velocity_rad_s == pytest.approx(
         worker.result.joint_velocity_rad_s
     )
+    assert status.ik_result_applied_this_cycle
+
+
+def test_position_mode_keeps_grip_capture_wrist_target_when_feedback_moves() -> None:
+    class PositionOnlyWorker(ImmediateIKWorker):
+        def submit(self, request: IKRequest) -> None:
+            self.submitted += 1
+            self.solved += 1
+            self.requests.append(request)
+            q_target = request.q_actual.copy()
+            q_target[0] += 0.05
+            velocity = np.zeros(6, dtype=np.float64)
+            velocity[0] = 0.05 / request.dt
+            self.result = IKResult(
+                generation=request.generation,
+                sequence=request.sequence,
+                sample_id=request.sample_id,
+                q_target_rad=q_target,
+                success=True,
+                position_error_m=0.0,
+                solve_time_ms=0.1,
+                joint_velocity_rad_s=velocity,
+                submitted_monotonic_ns=request.submitted_monotonic_ns,
+            )
+
+    worker = PositionOnlyWorker()
+    controller = FullBodyQPIKController(
+        FakeKinematics(),
+        xr_to_base_rotation=XR_TO_BASE,
+        config=CartesianControlConfig(
+            ik_mode="position",
+            position_filter_hz=0.0,
+            orientation_filter_hz=0.0,
+            position_deadband_m=0.0,
+            orientation_deadband_rad=0.0,
+            stale_timeout_s=1.0,
+            max_joint_speed_rad_s=1000.0,
+            max_joint_acceleration_rad_s2=1000.0,
+        ),
+        ik_worker=worker,
+    )
+    now = time.monotonic_ns()
+    captured_observation = _observation(q_deg=(0.0, -60.0, -70.0, 10.0, 20.0, 30.0))
+    controller.update(_frame(now), captured_observation, 0.02, now_ns=now)
+    controller.update(
+        _frame(now + 20_000_000, grip=1.0),
+        captured_observation,
+        0.02,
+        now_ns=now + 20_000_000,
+    )
+    moved_observation = _observation(q_deg=(0.0, -60.0, -70.0, 15.0, 25.0, 35.0))
+
+    action, status = controller.update(
+        _frame(now + 40_000_000, position=(0.05, 0.0, 0.0), grip=1.0),
+        moved_observation,
+        0.02,
+        now_ns=now + 40_000_000,
+    )
+
+    assert status.ik_success
+    assert status.target_deg[3:6] == pytest.approx([10.0, 20.0, 30.0])
+    assert [action[f"{name}.pos"] for name in ARM_JOINT_NAMES[3:]] == pytest.approx(
+        [10.0, 20.0, 30.0]
+    )
 
 
 def test_completed_qp_is_consumed_before_next_submission_and_keeps_its_own_velocity() -> None:
@@ -301,6 +365,57 @@ def test_completed_qp_is_consumed_before_next_submission_and_keeps_its_own_veloc
     assert worker.submitted == 2
     assert worker.requests[-1].dq_previous == pytest.approx(expected_qp_velocity)
     assert worker.requests[-1].dq_previous != pytest.approx(outer_velocity)
+
+
+def test_failed_matching_qp_result_clears_stale_previous_velocity() -> None:
+    class FailAfterFirstWorker(ImmediateIKWorker):
+        def submit(self, request: IKRequest) -> None:
+            if self.submitted == 0:
+                super().submit(request)
+                return
+            FailingIKWorker.submit(self, request)
+
+    worker = FailAfterFirstWorker()
+    controller = FullBodyQPIKController(
+        FakeKinematics(),
+        xr_to_base_rotation=XR_TO_BASE,
+        config=CartesianControlConfig(
+            position_filter_hz=0.0,
+            orientation_filter_hz=0.0,
+            position_deadband_m=0.0,
+            orientation_deadband_rad=0.0,
+            stale_timeout_s=1.0,
+            max_joint_speed_rad_s=1000.0,
+            max_joint_acceleration_rad_s2=1000.0,
+        ),
+        ik_worker=worker,
+    )
+    now = time.monotonic_ns()
+    observation = _observation()
+    controller.update(_frame(now), observation, 0.02, now_ns=now)
+    controller.update(
+        _frame(now + 20_000_000, grip=1.0),
+        observation,
+        0.02,
+        now_ns=now + 20_000_000,
+    )
+    controller.update(
+        _frame(now + 40_000_000, position=(0.1, 0.0, 0.0), grip=1.0),
+        observation,
+        0.02,
+        now_ns=now + 40_000_000,
+    )
+    assert np.linalg.norm(controller.qp.accepted_joint_velocity_rad_s) > 0.0
+
+    _, status = controller.update(
+        _frame(now + 60_000_000, position=(0.2, 0.0, 0.0), grip=1.0),
+        observation,
+        0.02,
+        now_ns=now + 60_000_000,
+    )
+
+    assert status.ik_success is False
+    assert controller.qp.accepted_joint_velocity_rad_s == pytest.approx(np.zeros(6))
 
 
 def test_active_qp_command_uses_feedback_bounded_lookahead_without_arm_reshaping(

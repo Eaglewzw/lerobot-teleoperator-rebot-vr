@@ -341,18 +341,21 @@ B601GravityCompensator(urdf_path=None)
 
 MITCommandDispatcher(robot, *, kp, kd, torque_limit_nm,
                      arm_velocity_limit_rad_s,
-                     gravity_scale=1.0, gravity_ramp_s=0.0,
+                     arm_acceleration_limit_rad_s2=None,
+                     position_lookahead_s=None,
+                     gravity_scale=1.0, gravity_ramp_s=1.0,
                      dynamics_urdf=None)
     .get_observation() -> dict[str, Any]
     .set_observation(observation) -> None
     .set_arm_velocity(velocity_rad_s) -> None
-    .set_arm_velocity_from_position_error(command_deg, actual_deg,
-                                          lookahead_s) -> None
+    .stop_arm_velocity(*, immediate) -> None
+    .stop_stale_arm_velocity(max_age_s) -> bool
+    .target_velocity_rad_s -> ndarray
     .desired_velocity_rad_s -> ndarray
     .send_action(action) -> Any
 ```
 
-dispatcher 包装原 follower：六轴走 MIT 命令，夹爪仍按配置的 follower 路径发送。它依赖当前 observation，使用前必须先同步反馈。MIT 是实验性实机路径，增益、力矩上限和重力倍率必须针对硬件验证。
+dispatcher 包装原 follower：六轴走 MIT 命令，夹爪仍按配置的 follower 路径发送。QP 速度目标经过基于真实发送周期的最终加速度限制后才进入电机；ACTIVE 位置目标由同一最终速度和分轴 lookahead 重建。它依赖当前 observation，使用前必须先同步反馈。MIT 是实验性实机路径，增益、力矩上限和重力倍率必须针对硬件验证。
 
 ## 6. Runtime 模块
 
