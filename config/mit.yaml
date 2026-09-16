@@ -48,8 +48,8 @@ qp_ik:
 motion_limits:
   max_joint_speed_rad_s: 2.0  # q1-q3
   max_joint_acceleration_rad_s2: 6.0  # q1-q3
-  wrist_speed_rad_s: 4.0  # q4-q6
-  wrist_acceleration_rad_s2: 20.0  # q4-q6
+  wrist_speed_rad_s: 2.0  # q4-q6
+  wrist_acceleration_rad_s2: 6.0  # q4-q6
   max_relative_target_deg: 10.0  # q1-q3 命令-反馈窗口
   wrist_relative_target_deg: 10.0  # q4-q6 命令-反馈窗口
   arm_command_lookahead_ms: 50.0
@@ -66,7 +66,7 @@ mit:
 
 # 启动与退出
 startup:
-  initial_q: [0.0, 0.8, 0.8, 0.4, 0.0, 0.0]  # q1-q6, rad
+  initial_q: [0.0, 0.8, 0.8, 0.2, 0.0, 0.0]  # q1-q6, rad
   move_to_initial: true
   initial_move_tolerance_deg: 3.0
   initial_move_timeout: 30.0

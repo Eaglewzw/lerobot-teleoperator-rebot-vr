@@ -1046,7 +1046,6 @@ def test_reference_initial_pose_maps_q2_q3_to_dm_signs_and_moves_with_limits() -
     actual = np.array([0.0, -0.4, -0.4, 0.0, 0.0, 0.0])
     first = mover.update(actual, 0.1)
     assert first.command_rad[1:3] == pytest.approx([-0.41, -0.41])
-    assert first.velocity_rad_s == pytest.approx([0.0, -0.1, -0.1, 0.0, 0.0, 0.0])
     assert not first.done
     status = first
     for _ in range(100):
@@ -1055,7 +1054,6 @@ def test_reference_initial_pose_maps_q2_q3_to_dm_signs_and_moves_with_limits() -
             break
     assert status.done
     assert status.command_rad == pytest.approx(target)
-    assert status.velocity_rad_s == pytest.approx(np.zeros(6))
 
 
 def test_initial_pose_motion_holds_measured_gripper_position() -> None:
@@ -1123,7 +1121,6 @@ def test_startup_pose_waits_for_feedback_without_reaching_follower_clamp() -> No
     assert status.command_rad[1:3] == pytest.approx(
         [-max_tracking_error, -max_tracking_error]
     )
-    assert status.velocity_rad_s == pytest.approx(np.zeros(6))
 
     moving_feedback = np.deg2rad([0.0, -1.0, -1.0, 0.0, 0.0, 0.0])
     resumed = mover.update(moving_feedback, 0.1)

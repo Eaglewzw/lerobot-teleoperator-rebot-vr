@@ -179,7 +179,7 @@ MIT 模式应先通过分轴调参验证增益和重力前馈，再进行 VR 遥
 ### 启动与退出
 
 - 默认启动：移动到配置的 `initial_q`；使用 `--no-move-to-initial` 跳过。
-- MIT 启动及退出回零同时发送轨迹位置和速度前馈，不使用遥操位置前视替换轨迹位置；保留速度、加速度、反馈距离及限位保护，到位或中断时清零速度。启动六轴统一使用 `max_joint_speed_rad_s` 和 `max_joint_acceleration_rad_s2`。
+- MIT 启动及退出回零发送整形后的轨迹位置，目标速度为 0，使用位置 PD 和重力补偿跟随；启动六轴统一使用 `max_joint_speed_rad_s` 和 `max_joint_acceleration_rad_s2`，退出回零另受 `exit_zero_speed_rad_s` 和 `exit_zero_acceleration_rad_s2` 限制。
 - 第一次 `Ctrl+C`：停止跟踪，q1–q6 回零后断开电机。
 - 第二次 `Ctrl+C`：跳过回零，直接断开电机。
 - `--no-return-to-zero-on-exit`：退出时不回零；`--duration` 可限制运行时间。
@@ -193,7 +193,7 @@ MIT 模式应先通过分轴调参验证增益和重力前馈，再进行 VR 遥
 | --- | ---: | ---: |
 | 配置文件 | `config/pos_vel.yaml` | `config/mit.yaml` |
 | q1–q3 速度 / 加速度 | 5.5 rad/s / 20 rad/s² | 2.0 rad/s / 6 rad/s² |
-| q4–q6 速度 / 加速度 | 12 rad/s / 60 rad/s² | 4.0 rad/s / 20 rad/s² |
+| q4–q6 速度 / 加速度 | 12 rad/s / 60 rad/s² | 2.0 rad/s / 6 rad/s² |
 | 臂部 / 腕部相对目标窗口 | 20° / 20° | 10° / 10° |
 | 位置滤波 / 死区 | 关闭 / 0 m | 4 Hz / 0.015 m |
 | QP 位置 / 姿态增益 | 10 / 8 | 4 / 2 |

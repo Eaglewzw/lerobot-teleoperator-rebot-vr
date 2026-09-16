@@ -10,7 +10,6 @@ from typing import Callable
 import numpy as np
 
 from ..control.startup import StartupPoseMover
-from ..control.mit import MITCommandDispatcher
 from ..control.feedback import read_robot_feedback
 from ..control.types import ARM_JOINT_NAMES, GRIPPER_NAME
 
@@ -73,23 +72,6 @@ def _move_to_joint_pose(robot, *, target_rad: np.ndarray, lower_limit_rad: np.nd
         tolerance_rad=np.deg2rad(args.initial_move_tolerance_deg),
         max_command_feedback_error_rad=np.deg2rad(args.max_relative_target_deg * 0.9),
     )
-    mit = robot if isinstance(robot, MITCommandDispatcher) else None
-    if mit is not None:
-        mit.stop_arm_velocity(immediate=True)
-    try:
-        return _run_joint_pose_motion(
-            robot, mover=mover, target_rad=target_rad, args=args,
-            should_stop=should_stop, phase=phase, mit=mit,
-        )
-    finally:
-        # Also clear feedforward on cancellation, stall, timeout or bad feedback.
-        if mit is not None:
-            mit.stop_arm_velocity(immediate=True)
-
-
-def _run_joint_pose_motion(robot, *, mover: StartupPoseMover, target_rad: np.ndarray,
-                           args, should_stop: Callable[[], bool], phase: str,
-                           mit: MITCommandDispatcher | None) -> bool:
     started_s = time.monotonic()
     previous_loop_s = started_s
     next_status_s = started_s
@@ -116,10 +98,6 @@ def _run_joint_pose_motion(robot, *, mover: StartupPoseMover, target_rad: np.nda
         # A stop received during feedback/FK must prevent another movement command.
         if should_stop():
             return False
-        if mit is not None:
-            mit.set_arm_trajectory_velocity(
-                np.zeros(6) if status.done else status.velocity_rad_s
-            )
         sent_action = robot.send_action(action)
         sent_deg = np.array([float(sent_action[f"{name}.pos"]) for name in ARM_JOINT_NAMES])
         if status.max_actual_error_rad < best_error_rad - progress_threshold_rad:
