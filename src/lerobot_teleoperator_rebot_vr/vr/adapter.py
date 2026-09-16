@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import overload
+
 import numpy as np
 
 from .models import VRFrame
@@ -14,6 +16,14 @@ def sample_is_fresh(sample: VR_SAMPLE_TYPES | None, now_ns: int, timeout_s: floa
         return False
     age_ns = max(0, now_ns - int(sample.received_monotonic_ns))
     return age_ns <= int(timeout_s * 1e9)
+
+
+@overload
+def sample_key(sample: VR_SAMPLE_TYPES) -> tuple[int, int, int]: ...
+
+
+@overload
+def sample_key(sample: None) -> None: ...
 
 
 def sample_key(sample: VR_SAMPLE_TYPES | None) -> tuple[int, int, int] | None:

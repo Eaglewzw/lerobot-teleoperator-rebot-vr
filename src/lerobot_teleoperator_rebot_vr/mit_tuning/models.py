@@ -8,22 +8,13 @@ from typing import Protocol
 import numpy as np
 import numpy.typing as npt
 
+from ..constants import ARM_JOINT_NAMES
 
-ARM_JOINT_NAMES = (
-    "shoulder_pan",
-    "shoulder_lift",
-    "elbow_flex",
-    "wrist_flex",
-    "wrist_yaw",
-    "wrist_roll",
-)
+
 JOINT_ALIASES = {
     **{f"q{index + 1}": index for index in range(6)},
     **{name: index for index, name in enumerate(ARM_JOINT_NAMES)},
 }
-JOINT_LOWER_DEG = np.array([-150.0, -200.0, -200.0, -80.0, -90.0, -90.0])
-JOINT_UPPER_DEG = np.array([150.0, 1.0, 1.0, 90.0, 90.0, 90.0])
-EFFORT_LIMIT_NM = np.array([27.0, 27.0, 27.0, 7.0, 7.0, 7.0])
 
 
 def _vector(value: object, name: str, *, length: int = 6) -> npt.NDArray[np.float64]:
@@ -187,11 +178,8 @@ class TuningRobot(Protocol):
 __all__ = [
     "ARM_JOINT_NAMES",
     "CommandFrame",
-    "EFFORT_LIMIT_NM",
     "FeedbackFrame",
     "JOINT_ALIASES",
-    "JOINT_LOWER_DEG",
-    "JOINT_UPPER_DEG",
     "MITTuningConfig",
     "TuningRobot",
     "TuningSample",

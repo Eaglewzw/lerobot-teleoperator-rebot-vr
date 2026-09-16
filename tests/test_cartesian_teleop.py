@@ -717,7 +717,7 @@ def test_consecutive_out_of_limit_feedback_requests_controlled_abort() -> None:
     assert second.feedback_abort_requested
     assert second.feedback_fault_count == 2
     assert second.feedback_fault_reason.startswith("outside_limits:shoulder_pan=")
-    rendered = _status_line(second, second_action)
+    rendered = _status_line(second)
     assert "[HOLD]" in rendered
     assert "fault #2: outside_limits:" in rendered
 

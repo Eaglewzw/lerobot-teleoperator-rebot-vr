@@ -9,6 +9,7 @@ from enum import Enum
 import numpy as np
 from scipy.spatial.transform import Rotation
 
+from .adapter import sample_key
 from .models import VRFrame
 from .tracking import ControllerSample, normalize_controller_side
 
@@ -243,7 +244,7 @@ class RelativePoseMapper:
         self.state = TeleopState.ACTIVE
         initial_target = PoseTarget(received_ns, ee_position_array, ee_rotation_array)
         self._filtered_target = initial_target
-        self._last_filtered_sample_key = self._sample_key(sample)
+        self._last_filtered_sample_key = sample_key(sample)
         return PoseMappingUpdate(
             state=self.state,
             target=initial_target,
@@ -350,23 +351,27 @@ class RelativePoseMapper:
     def _filter_target(
         self, target: PoseTarget, sample: ControllerSample | VRFrame
     ) -> PoseTarget:
-        sample_key = self._sample_key(sample)
+        current_sample_key = sample_key(sample)
         previous = self._filtered_target
         previous_key = self._last_filtered_sample_key
         if previous is None or previous_key is None:
             self._filtered_target = target
-            self._last_filtered_sample_key = sample_key
+            self._last_filtered_sample_key = current_sample_key
             return target
-        if sample_key == previous_key:
+        if current_sample_key == previous_key:
             return previous
 
         # Some V1 senders omit timeStampNs (parsed as zero) or restart their
         # upstream clock. Filtering must remain tied to PC receive time in
         # those cases, otherwise alpha becomes 1 and the low-pass is bypassed.
-        if sample_key[1] > 0 and previous_key[1] > 0 and sample_key[1] > previous_key[1]:
-            elapsed_s = (sample_key[1] - previous_key[1]) * 1e-9
+        if (
+            current_sample_key[1] > 0
+            and previous_key[1] > 0
+            and current_sample_key[1] > previous_key[1]
+        ):
+            elapsed_s = (current_sample_key[1] - previous_key[1]) * 1e-9
         else:
-            elapsed_s = max(0.0, (sample_key[2] - previous_key[2]) * 1e-9)
+            elapsed_s = max(0.0, (current_sample_key[2] - previous_key[2]) * 1e-9)
         position_delta = target.position - previous.position
         if np.linalg.norm(position_delta) < self.position_deadband_m:
             position_delta = np.zeros(3, dtype=np.float64)
@@ -388,16 +393,8 @@ class RelativePoseMapper:
         )
         filtered = PoseTarget(target.sample_id, filtered_position, filtered_rotation)
         self._filtered_target = filtered
-        self._last_filtered_sample_key = sample_key
+        self._last_filtered_sample_key = current_sample_key
         return filtered
-
-    @staticmethod
-    def _sample_key(sample: ControllerSample | VRFrame) -> tuple[int, int, int]:
-        return (
-            int(sample.stream_epoch),
-            int(sample.tracking_timestamp_ns),
-            int(sample.received_monotonic_ns),
-        )
 
     @staticmethod
     def _filter_alpha(cutoff_hz: float, dt_s: float) -> float:

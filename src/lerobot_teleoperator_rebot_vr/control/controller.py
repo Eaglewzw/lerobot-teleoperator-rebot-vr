@@ -138,7 +138,6 @@ class FullBodyQPIKController:
         self._primary_button_down = False
         self._secondary_button_down = False
         self._feedback_fault_count = 0
-        self._feedback_fault_reason = ""
         self._last_valid_q_actual_rad: np.ndarray | None = None
         self._last_valid_gripper_actual_deg: float | None = None
         self.home_q_rad = reference_initial_q_to_dm(
@@ -203,7 +202,6 @@ class FullBodyQPIKController:
             self.gripper.reset_after_feedback_recovery(gripper_actual_deg)
             self._last_state = self.mapper.state
             self._feedback_fault_count = 0
-            self._feedback_fault_reason = ""
 
         self._last_valid_q_actual_rad = q_actual_rad.copy()
         self._last_valid_gripper_actual_deg = gripper_actual_deg
@@ -445,7 +443,6 @@ class FullBodyQPIKController:
         reason: str,
     ) -> tuple[dict[str, float] | None, CartesianControlStatus]:
         self._feedback_fault_count += 1
-        self._feedback_fault_reason = reason
         if self._feedback_fault_count == 1:
             self.mapper.reset(require_release=True)
             self._begin_generation()

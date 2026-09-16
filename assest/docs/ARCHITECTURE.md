@@ -21,7 +21,8 @@
 ```text
 pyproject.toml                         打包、依赖、三个命令行入口
 src/lerobot_teleoperator_rebot_vr/
-├── config_rebot_vr.py                公共配置、关节常量、插件配置注册
+├── constants.py                     统一关节名称、follower 限位、固定前馈力矩上限
+├── config_rebot_vr.py                公共配置、插件配置注册
 ├── rebot_vr.py                       LeRobot Teleoperator 适配器
 ├── __init__.py                       公共导出及旧模块路径兼容
 ├── urdf/                             运动学/动力学 URDF
@@ -55,6 +56,8 @@ src/lerobot_teleoperator_rebot_vr/
 ```
 
 包根的 `teleoperate_real.py`、`print_vr_data.py` 和 `gripper_test.py` 只是兼容旧路径的薄转发文件，不承载核心实现。
+
+`constants.py` 用不可变元组统一关节顺序、follower 软件限位和固定前馈力矩上限；YAML 保留可调运行值，各层仍独立校验限位。`tools/disable_motors.py` 为支持直接按文件路径运行，保留独立关节名称表。样本标识统一使用 `vr.adapter.sample_key()`，滤波和 QP 各自维护去重状态。
 
 ## 3. 总体分层
 

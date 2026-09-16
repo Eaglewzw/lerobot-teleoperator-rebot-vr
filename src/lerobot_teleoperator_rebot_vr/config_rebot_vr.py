@@ -6,18 +6,8 @@ from dataclasses import dataclass, field
 import numpy as np
 from lerobot.teleoperators.config import TeleoperatorConfig
 
+from .constants import ARM_JOINT_NAMES as ARM_JOINTS, JOINT_NAMES as REBOT_JOINTS
 
-REBOT_JOINTS = (
-    "shoulder_pan",
-    "shoulder_lift",
-    "elbow_flex",
-    "wrist_flex",
-    "wrist_yaw",
-    "wrist_roll",
-    "gripper",
-)
-
-ARM_JOINTS = REBOT_JOINTS[:6]
 
 # OpenXR X=right, Y=up, Z=backward -> reBot X=forward, Y=left, Z=up.
 DEFAULT_BASE_T_ANCHOR: list[list[float]] = [

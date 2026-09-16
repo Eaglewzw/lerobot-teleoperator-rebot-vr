@@ -12,14 +12,13 @@ from typing import TextIO
 
 import numpy as np
 
+from ..constants import JOINT_NAMES
 from ..control.types import (
     ARM_JOINT_NAMES,
-    GRIPPER_NAME,
     CartesianControlStatus,
 )
 
 
-JOINT_NAMES = (*ARM_JOINT_NAMES, GRIPPER_NAME)
 TIMESTAMP_FIELDNAMES = (
     "monotonic_timestamp_ns",
     "loop_started_monotonic_ns",

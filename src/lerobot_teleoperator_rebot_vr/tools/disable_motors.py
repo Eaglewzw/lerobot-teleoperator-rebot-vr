@@ -11,7 +11,7 @@ import argparse
 import time
 from dataclasses import dataclass
 
-
+# Keep this diagnostic runnable directly without importing the control package.
 JOINTS = (
     "shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex",
     "wrist_yaw", "wrist_roll", "gripper",

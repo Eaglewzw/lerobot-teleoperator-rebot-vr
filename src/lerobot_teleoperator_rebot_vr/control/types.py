@@ -5,27 +5,19 @@ from typing import Protocol
 
 import numpy as np
 
+from ..constants import (
+    ARM_JOINT_NAMES,
+    FOLLOWER_LOWER_DEG,
+    FOLLOWER_UPPER_DEG,
+    GRIPPER_NAME,
+)
 from ..ik.async_worker import IKRequest, IKResult
 from ..vr.pose_mapping import TeleopState
 
 
-ARM_JOINT_NAMES = (
-    "shoulder_pan",
-    "shoulder_lift",
-    "elbow_flex",
-    "wrist_flex",
-    "wrist_yaw",
-    "wrist_roll",
-)
-GRIPPER_NAME = "gripper"
-
 # Match the LeRobot RebotB601Follower software limits, expressed in radians.
-FOLLOWER_LOWER_RAD = np.deg2rad(
-    np.array([-150.0, -200.0, -200.0, -80.0, -90.0, -90.0])
-)
-FOLLOWER_UPPER_RAD = np.deg2rad(
-    np.array([150.0, 1.0, 1.0, 90.0, 90.0, 90.0])
-)
+FOLLOWER_LOWER_RAD = np.deg2rad(FOLLOWER_LOWER_DEG)
+FOLLOWER_UPPER_RAD = np.deg2rad(FOLLOWER_UPPER_DEG)
 FEEDBACK_LIMIT_TOLERANCE_RAD = np.deg2rad(1.0)
 
 

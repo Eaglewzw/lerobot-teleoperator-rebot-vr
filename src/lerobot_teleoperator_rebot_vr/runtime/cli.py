@@ -9,6 +9,7 @@ import sys
 import numpy as np
 import yaml
 
+from ..constants import ARM_EFFORT_LIMIT_NM
 from ..control.startup import DEFAULT_INITIAL_Q_REFERENCE_RAD
 from ..control.types import CartesianControlStatus
 from .shutdown import ShutdownPolicy
@@ -272,7 +273,7 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
         "--mit-torque-limit-nm",
         type=float,
         nargs=6,
-        default=(27.0, 27.0, 27.0, 7.0, 7.0, 7.0),
+        default=ARM_EFFORT_LIMIT_NM,
         metavar=("Q1", "Q2", "Q3", "Q4", "Q5", "Q6"),
         help=(
             "absolute q1-q6 feedforward torque limits in N*m "
@@ -500,13 +501,12 @@ def validate_args(args: argparse.Namespace) -> None:
     if not _is_finite_vector_in_range(mit_kd, 0.0, 5.0):
         raise ValueError("MIT Kd must contain six finite values in [0, 5]")
 
-    effort_limit = np.array([27.0, 27.0, 27.0, 7.0, 7.0, 7.0])
     if not _is_finite_vector_in_range(
-        mit_torque, 0.0, effort_limit, lower_inclusive=False
+        mit_torque, 0.0, np.asarray(ARM_EFFORT_LIMIT_NM), lower_inclusive=False
     ):
         raise ValueError(
             "MIT torque limits must be positive and no greater than "
-            "[27, 27, 27, 7, 7, 7] N*m"
+            f"[{', '.join(f'{value:g}' for value in ARM_EFFORT_LIMIT_NM)}] N*m"
         )
 
     if (
@@ -529,7 +529,7 @@ def follower_relative_target(arm_relative_target_deg: float, wrist_relative_targ
     return {"shoulder_pan": arm_relative_target_deg, "shoulder_lift": arm_relative_target_deg, "elbow_flex": arm_relative_target_deg, "wrist_flex": wrist_relative_target_deg, "wrist_yaw": wrist_relative_target_deg, "wrist_roll": wrist_relative_target_deg, "gripper": gripper_value}
 
 
-def status_line(status: CartesianControlStatus, sent_action: dict[str, float] | None = None) -> str:
+def status_line(status: CartesianControlStatus) -> str:
     def vector(values: np.ndarray) -> str:
         return np.array2string(
             np.asarray(values), precision=1, suppress_small=True, max_line_width=120

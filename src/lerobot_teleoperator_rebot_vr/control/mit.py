@@ -10,6 +10,7 @@ from typing import Any
 
 import numpy as np
 
+from ..constants import ARM_EFFORT_LIMIT_NM
 from .dynamics import B601GravityCompensator
 from .joint_command import braking_velocity_bounds
 from .types import ARM_JOINT_NAMES, GRIPPER_NAME
@@ -17,7 +18,6 @@ from .types import ARM_JOINT_NAMES, GRIPPER_NAME
 
 MIT_KP_MAX = 500.0
 MIT_KD_MAX = 5.0
-URDF_EFFORT_LIMIT_NM = np.array([27.0, 27.0, 27.0, 7.0, 7.0, 7.0])
 
 
 def _six_vector(value: Any, name: str, *, allow_zero: bool) -> np.ndarray:
@@ -92,10 +92,10 @@ class MITCommandDispatcher:
             raise ValueError(f"MIT Kp cannot exceed {MIT_KP_MAX:g}")
         if np.any(self.kd > MIT_KD_MAX):
             raise ValueError(f"MIT Kd cannot exceed {MIT_KD_MAX:g}")
-        if np.any(self.torque_limit_nm > URDF_EFFORT_LIMIT_NM):
+        if np.any(self.torque_limit_nm > ARM_EFFORT_LIMIT_NM):
             raise ValueError(
                 "MIT torque limits cannot exceed URDF effort limits "
-                f"{URDF_EFFORT_LIMIT_NM.tolist()} Nm"
+                f"{list(ARM_EFFORT_LIMIT_NM)} Nm"
             )
         if not np.isfinite(gravity_scale) or not 0.0 <= gravity_scale <= 2.0:
             raise ValueError("MIT gravity scale must be finite and in [0, 2]")

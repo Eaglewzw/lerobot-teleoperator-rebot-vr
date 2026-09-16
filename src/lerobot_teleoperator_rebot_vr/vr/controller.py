@@ -97,7 +97,6 @@ class XRoboToolkitV1Controller:
         self._running = threading.Event()
         self._lock = threading.Lock()
         self._latest: VRFrame | None = None
-        self._latest_sample: ControllerSample | None = None
 
     @property
     def is_connected(self) -> bool:
@@ -131,7 +130,6 @@ class XRoboToolkitV1Controller:
         self._source.stop()
         with self._lock:
             self._latest = None
-            self._latest_sample = None
 
     def feed_bytes(self, data: bytes, *, received_monotonic_ns: int | None = None) -> None:
         self._source.feed_bytes(data, received_monotonic_ns=received_monotonic_ns)
@@ -147,7 +145,6 @@ class XRoboToolkitV1Controller:
     ) -> None:
         frame = self._tracking_to_frame(sample)
         with self._lock:
-            self._latest_sample = sample
             self._latest = frame
 
     def _tracking_to_frame(self, sample: ControllerSample) -> VRFrame:

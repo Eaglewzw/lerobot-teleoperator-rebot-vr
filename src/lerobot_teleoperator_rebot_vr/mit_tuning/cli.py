@@ -12,12 +12,12 @@ from pathlib import Path
 
 import numpy as np
 
+from ..constants import ARM_EFFORT_LIMIT_NM
 from .analysis import TuningAnalyzer
 from .hardware import LeRobotMITTuningRobot
 from .logger import TuningCSVLogger
 from .models import (
     ARM_JOINT_NAMES,
-    EFFORT_LIMIT_NM,
     JOINT_ALIASES,
     MITTuningConfig,
 )
@@ -93,7 +93,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--torque-limit-nm",
         type=float,
         nargs=6,
-        default=tuple(EFFORT_LIMIT_NM),
+        default=ARM_EFFORT_LIMIT_NM,
         metavar=("Q1", "Q2", "Q3", "Q4", "Q5", "Q6"),
     )
     gains.add_argument("--gravity-scale", type=float, default=1.0)
@@ -178,11 +178,11 @@ def _validated(
         torque.shape != (6,)
         or not np.all(np.isfinite(torque))
         or np.any(torque <= 0)
-        or np.any(torque > EFFORT_LIMIT_NM)
+        or np.any(torque > ARM_EFFORT_LIMIT_NM)
     ):
         raise ValueError(
             "torque limits must be positive and no greater than "
-            "[27, 27, 27, 7, 7, 7] N*m"
+            f"[{', '.join(f'{value:g}' for value in ARM_EFFORT_LIMIT_NM)}] N*m"
         )
     if not np.isfinite(args.gravity_scale) or not 0 <= args.gravity_scale <= 2:
         raise ValueError("gravity-scale must be in [0, 2]")

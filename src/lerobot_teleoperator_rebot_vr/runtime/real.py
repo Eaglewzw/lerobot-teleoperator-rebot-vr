@@ -473,7 +473,7 @@ def main() -> None:
                 csv_logger.write_row(build_csv_row(status))
 
             if status.feedback_abort_requested:
-                print(_status_line(status, sent_action), flush=True)
+                print(_status_line(status), flush=True)
                 preserve_torque_for_feedback_fault = True
                 _settle_persistent_feedback_fault(
                     robot_io,
@@ -489,7 +489,7 @@ def main() -> None:
                 )
 
             if loop_started_s >= next_status_s:
-                print(_status_line(status, sent_action), flush=True)
+                print(_status_line(status), flush=True)
                 next_status_s = loop_started_s + 1.0 / args.status_rate
             sleep_s = 1.0 / args.fps - (time.monotonic() - loop_started_s)
             if sleep_s > 0.0:
