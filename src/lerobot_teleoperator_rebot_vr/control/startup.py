@@ -45,6 +45,7 @@ def reference_initial_q_to_dm(
 @dataclass(frozen=True)
 class StartupPoseStatus:
     command_rad: np.ndarray
+    velocity_rad_s: np.ndarray
     max_actual_error_rad: float
     done: bool
 
@@ -155,8 +156,19 @@ class StartupPoseMover:
         self._settled_samples = (
             self._settled_samples + 1 if at_target else 0
         )
+        # Use the final, feedback-bounded trajectory, not an error/lookahead
+        # velocity. Feedback corrections must not create unbounded feedforward.
+        velocity_rad_s = np.clip(
+            self._velocity_rad_s, -self.max_speed_rad_s, self.max_speed_rad_s
+        )
+        stopped = (
+            np.isclose(self._command_rad, self.target_rad, rtol=0.0, atol=1e-12)
+            | (velocity_rad_s * (self._command_rad - actual_rad) <= 0.0)
+        )
+        velocity_rad_s[stopped] = 0.0
         return StartupPoseStatus(
             command_rad=self._command_rad.copy(),
+            velocity_rad_s=velocity_rad_s,
             max_actual_error_rad=max_error,
             done=self._settled_samples >= self.settle_samples,
         )

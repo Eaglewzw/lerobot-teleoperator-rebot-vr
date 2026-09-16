@@ -17,7 +17,6 @@ from ..control.mit import MITCommandDispatcher
 from ..config_rebot_vr import DEFAULT_BASE_T_ANCHOR, RebotVRConfig
 from ..control.types import ARM_JOINT_NAMES, GRIPPER_NAME, CartesianControlConfig
 from ..diagnostics.logger import CSVLogger, build_csv_row
-from ..diagnostics.motor_io import MotorIODiagnostics
 from ..ik.kinematics import B601Kinematics
 from ..vr.controller import make_vr_controller
 from .cli import (
@@ -265,7 +264,6 @@ def main() -> None:
     else:
         print("Initial-pose motion is disabled; VR control will start from actual feedback.")
     csv_logger = CSVLogger(args.csv_log) if args.csv_log is not None else None
-    motor_diagnostics = None
     if csv_logger is not None:
         print(
             "CSV logging enabled: "
@@ -278,11 +276,6 @@ def main() -> None:
         vr_connected = True
         robot_io.connect(calibrate=not args.no_calibrate)
         robot_connected = True
-        if args.motor_diagnostics:
-            motor_diagnostics = MotorIODiagnostics(args.csv_log, metadata=vars(args).copy())
-            motor_diagnostics.install(robot)
-            print(f"Motor API diagnostics: {motor_diagnostics.output_path}; "
-                  "CAN reception timestamps/counters unavailable in this MotorBridge API.", flush=True)
         if args.move_to_initial:
             assert initial_target_rad is not None
             print(f"Initial feedback request cap: {args.initial_feedback_request_hz:g} Hz per motor "
@@ -313,9 +306,6 @@ def main() -> None:
                 break
             dt_s = loop_started_s - previous_loop_s
             previous_loop_s = loop_started_s
-            if motor_diagnostics is not None:
-                motor_diagnostics.cycle_started_monotonic_ns = loop_started_ns
-                motor_diagnostics.phase = 'loop_feedback'
             feedback_started_ns = time.monotonic_ns()
             try:
                 observation = robot_io.get_observation()
@@ -336,8 +326,6 @@ def main() -> None:
             controller_finished_ns = time.monotonic_ns()
             if stop and not status.feedback_abort_requested:
                 break
-            if motor_diagnostics is not None:
-                motor_diagnostics.phase = status.state.value
             send_started_ns = time.monotonic_ns()
             if isinstance(robot_io, MITCommandDispatcher):
                 if not status.feedback_valid or status.state.value != "active":
@@ -495,8 +483,6 @@ def main() -> None:
             if sleep_s > 0.0:
                 time.sleep(sleep_s)
     finally:
-        if motor_diagnostics is not None:
-            motor_diagnostics.phase = 'shutdown'
         try:
             try:
                 if arm_started:
@@ -520,8 +506,6 @@ def main() -> None:
                                     and not preserve_torque_for_feedback_fault
                                     and sys.exc_info()[0] is None
                                 ):
-                                    if motor_diagnostics is not None:
-                                        motor_diagnostics.phase = 'exit_zero'
                                     try:
                                         if isinstance(robot_io, MITCommandDispatcher):
                                             robot_io.stop_arm_velocity(immediate=True)
@@ -537,8 +521,6 @@ def main() -> None:
                                     except Exception:
                                         logger.exception("Return to zero failed; proceeding to disconnect.")
                             finally:
-                                if motor_diagnostics is not None:
-                                    motor_diagnostics.phase = 'shutdown'
                                 if preserve_torque_for_feedback_fault:
                                     print(
                                         "Persistent feedback fault: retaining motor torque at the "
@@ -550,13 +532,6 @@ def main() -> None:
                     finally:
                         kinematics.close()
         finally:
-            if motor_diagnostics is not None:
-                motor_diagnostics.restore()
-                try:
-                    motor_diagnostics.close()
-                    print(f"Motor diagnostics summary: {motor_diagnostics.summary_path}", flush=True)
-                except RuntimeError:
-                    logger.exception("failed to finish motor diagnostics")
             if csv_logger is not None:
                 try:
                     csv_logger.close()

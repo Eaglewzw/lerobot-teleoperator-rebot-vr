@@ -1,4 +1,3 @@
-import csv
 import json
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -6,7 +5,6 @@ from unittest.mock import Mock
 import pytest
 
 from lerobot_teleoperator_rebot_vr.control.types import ARM_JOINT_NAMES, GRIPPER_NAME
-from lerobot_teleoperator_rebot_vr.diagnostics.motor_io import MotorIODiagnostics
 from lerobot_teleoperator_rebot_vr.runtime import shutdown
 from lerobot_teleoperator_rebot_vr.runtime.cli import build_parser, validate_args
 from lerobot_teleoperator_rebot_vr.runtime.shutdown import ManagedFollower, ShutdownFeedback, ShutdownPolicy
@@ -204,22 +202,6 @@ def test_report_write_failure_does_not_skip_cleanup(rig, tmp_path):
     result = ManagedFollower(rig.robot, report_path=tmp_path).disconnect()
     rig.bus.close.assert_called_once()
     assert any("write shutdown report" in e for e in result.cleanup_errors)
-
-
-def test_shutdown_is_captured_by_existing_motor_diagnostics(rig, tmp_path):
-    adapter = ManagedFollower(rig.robot)
-    diagnostics = MotorIODiagnostics(tmp_path / "run.csv", metadata={})
-    diagnostics.install(adapter)
-    diagnostics.phase = "shutdown"
-    result = adapter.disconnect()
-    diagnostics.restore()
-    diagnostics.close()
-    with diagnostics.output_path.open() as stream:
-        sends = [r for r in csv.DictReader(stream) if r["operation"] == "disable"]
-    assert len(sends) == 21
-    assert all(r["phase"] == "shutdown" and r["ok"] == "True" for r in sends)
-    assert all(r.disable_sent == 3 for r in result.motors)
-    assert adapter.motors == {}
 
 
 @pytest.mark.parametrize("option,value", [

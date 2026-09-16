@@ -128,6 +128,7 @@ class MITCommandDispatcher:
         self._velocity_target_updated_s: float | None = None
         self._last_velocity_step_s: float | None = None
         self._velocity_aligned_position = False
+        self._trajectory_velocity_active = False
         self._first_command_s: float | None = None
         self.last_gravity_torque_nm = np.zeros(6, dtype=np.float64)
         self.last_feedforward_torque_nm = np.zeros(6, dtype=np.float64)
@@ -148,6 +149,7 @@ class MITCommandDispatcher:
         self._latest_observation = dict(observation)
 
     def set_arm_velocity(self, velocity_rad_s: np.ndarray | None) -> None:
+        self._trajectory_velocity_active = False
         if velocity_rad_s is None:
             self.stop_arm_velocity(immediate=True)
             return
@@ -163,6 +165,17 @@ class MITCommandDispatcher:
         if self.acceleration_limit_rad_s2 is None:
             self._desired_velocity_rad_s = self._target_velocity_rad_s.copy()
 
+    def set_arm_trajectory_velocity(self, velocity_rad_s: np.ndarray) -> None:
+        """Feed forward a bounded trajectory's velocity without replacing its position.
+
+        Keep the final velocity/acceleration limiter. A stopped trajectory axis
+        clears residual velocity immediately, as at a position-limit clamp.
+        """
+        self.set_arm_velocity(velocity_rad_s)
+        self._velocity_aligned_position = False
+        self._trajectory_velocity_active = True
+        self._desired_velocity_rad_s[self._target_velocity_rad_s == 0.0] = 0.0
+
     def stop_arm_velocity(self, *, immediate: bool) -> None:
         """Request zero velocity, optionally bypassing the deceleration ramp."""
         self._target_velocity_rad_s.fill(0.0)
@@ -171,6 +184,7 @@ class MITCommandDispatcher:
             self._desired_velocity_rad_s.fill(0.0)
             self._last_velocity_step_s = None
             self._velocity_aligned_position = False
+            self._trajectory_velocity_active = False
 
     def stop_stale_arm_velocity(self, max_age_s: float) -> bool:
         """Ramp toward zero after the last accepted QP velocity becomes stale."""
@@ -243,6 +257,21 @@ class MITCommandDispatcher:
                     goal_deg[name] = float(aligned_position_deg[index])
         goal_deg = self._clip_joint_limits(goal_deg)
         goal_deg = self._clip_relative_target(goal_deg)
+        if self._trajectory_velocity_active:
+            # Explicit startup/zero trajectories may reach hard-limit zero, so
+            # use hard limits here rather than ACTIVE's interior safety margin.
+            if self.acceleration_limit_rad_s2 is not None:
+                lo, hi = braking_velocity_bounds(
+                    q_actual_rad, self.joint_lower_limit_rad,
+                    self.joint_upper_limit_rad, self.acceleration_limit_rad_s2,
+                )
+                self._desired_velocity_rad_s = np.clip(self._desired_velocity_rad_s, lo, hi)
+            position_error = np.deg2rad(
+                [goal_deg[name] for name in ARM_JOINT_NAMES]
+            ) - q_actual_rad
+            self._desired_velocity_rad_s[
+                self._desired_velocity_rad_s * position_error <= 0.0
+            ] = 0.0
         if self._first_command_s is None:
             self._first_command_s = now_s
         ramp = (

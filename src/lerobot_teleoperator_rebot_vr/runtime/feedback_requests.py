@@ -33,7 +33,6 @@ class _LimitedRequests:
 def limit_startup_feedback_requests(robot, rate_hz, *, clock=time.monotonic):
     """Temporarily share a per-axis request limit across reads and send_action.
 
-    Install after motor diagnostics so those logs count actual SDK requests.
     Zero disables throttling. Restore before VR following, homing, or shutdown,
     including when initial motion raises or is interrupted. Not a freshness
     check: unchanged get_state remains a potentially stale SDK cache read.

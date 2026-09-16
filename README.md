@@ -1,6 +1,6 @@
 # reBot VR Teleoperation
 
-基于 PICO 4 的 reBot B601-DM VR 遥操作插件。
+基于 PICO 4、LeRobot 和闭环 QP IK 的 reBot B601-DM 六轴机械臂实机遥操作插件，支持夹爪控制、奇异位形自适应和运行诊断。
 
 <div align="center">
 
@@ -12,36 +12,33 @@
 
 </div>
 
-本项目面向 Seeed Studio reBot B601-DM（达妙电机），通过 LeRobot、VR 相对位姿映射与闭环 QP IK，实现六轴机械臂和夹爪的实机遥操作。
+## 功能
 
-## 项目简介
+- **6-DoF QP IK**：支持完整位姿或纯位置跟踪，并根据奇异程度调整姿态权重和阻尼。
+- **Grip 离合控制**：按住跟随，松开保持，重新激活时不会产生目标突跳。
+- **分层安全保护**：包含关节限位、速度与加速度约束、相对目标钳制和反馈异常保护。
+- **双控制模式**：默认使用 `POS_VEL`；MIT 模式提供 PD 控制和重力前馈，仍处于实验阶段。
+- **运行诊断**：可记录关节、IK 和链路延迟数据。
 
-系统接收 PICO 4 手柄位姿，将其映射为机械臂 TCP 目标，并结合实时关节反馈生成安全、连续的六轴控制命令。主要功能包括：
-
-- **自适应 6-DoF QP IK**：支持位置、完整位姿跟踪和奇异位形自适应。
-- **Grip 离合控制**：按住跟随，松开保持，恢复跟踪时防止突跳。
-- **分层安全保护**：提供关节限位、命令整形、相对目标和异常反馈保护。
-- **双控制模式**：默认使用 `POS_VEL`，可选带重力前馈的实验性 MIT 模式。
-- **运行诊断**：记录关节、IK 和延迟数据，并生成 CSV 统计。
-
-## 要求
+## 运行要求
 
 | 项目 | 要求 |
-|---|---|
-| 机械臂 | Seeed Studio reBot B601-DM |
-| VR | PICO 4 + 支持 XRoboToolkit V1 Tracking 协议的发送端 |
+| --- | --- |
+| 机械臂 | Seeed Studio reBot B601-DM（达妙电机） |
+| VR | PICO 4 + XRoboToolkit V1 Tracking 发送端 |
 | 主机 | Linux，达妙串口转 CAN，默认 921600 baud |
 | Python | 3.12+ |
 | LeRobot | `>=0.6.0,<0.7.0`，包含 `rebot` extra |
+| 环境工具 | [uv](https://docs.astral.sh/uv/getting-started/installation/)；安装 PICO APK 时还需要 `adb` |
 
 ## 安全提示
 
 > [!WARNING]
-> 程序默认在启动后移动到初始姿态，即使尚未按下 Grip。首次运行应降低速度并托住机械臂，确认各关节方向和零位正确。默认断开时关闭电机扭矩，退出前务必支撑机械臂。不要在反馈异常或电机未全部在线时绕过安全检查。
+> 程序默认在启动后自动移动到初始姿态，即使尚未按下 Grip。首次运行必须托住机械臂，并使用下文的低速命令检查关节方向、零位和限位。程序退出时默认关闭电机扭矩，机械臂可能失去支撑；不要在电机未全部在线或反馈异常时绕过安全检查。
 
 ## 安装
 
-在插件根目录执行，使用 Python 3.12+ 虚拟环境：
+在项目根目录创建 Python 3.12+ 环境：
 
 ```bash
 uv venv --python 3.12 .venv
@@ -50,7 +47,7 @@ uv pip install -e .
 rebot-vr-teleoperate --help
 ```
 
-如果已有 LeRobot 环境，也可以将插件安装到该环境中（按实际位置替换路径）：
+已有 LeRobot 环境时，可直接安装到该环境（按实际路径调整）：
 
 ```bash
 uv pip install \
@@ -58,21 +55,36 @@ uv pip install \
   -e .
 
 source ~/Python/lerobot/.venv/bin/activate
-rebot-vr-teleoperate --help
 ```
 
-基础安装包含 LeRobot reBot 支持、NumPy、SciPy、Pinocchio 和 PyYAML。默认 QP 后端为 SciPy；需要 OSQP 或开发测试依赖时，在已激活的环境中执行：
+基础安装使用 SciPy QP 后端。OSQP 和测试依赖按需安装：
 
 ```bash
-uv pip install -e '.[qp]'       # 可选 OSQP 后端
-uv pip install -e '.[test]'     # pytest 测试依赖
+uv pip install -e '.[qp]'       # OSQP 后端
+uv pip install -e '.[test]'     # pytest
 ```
 
-## 启动前自检
+## PICO 发送端
+
+仓库提供 `assest/reBot.apk`。在 PICO 4 中启用开发者模式和 USB 调试，连接主机后安装：
+
+```bash
+adb install -r assest/reBot.apk
+```
+
+当前 APK 的 SHA-256：
+
+```text
+d8e10b85babe5cbf94389903398e228a3639f3f77183e98582a8cc303410b714
+```
+
+在 PICO 发送端填写主机的局域网 IP 和端口 `63901`。`0.0.0.0` 只用于主机监听，不能作为 PICO 的目标地址。
+
+## 首次安全运行
 
 ### 1. 检查七个电机
 
-扫描时不要同时运行遥操程序或其他占用串口的软件。
+扫描时不要运行遥操程序或其他占用串口的软件：
 
 ```bash
 motorbridge-cli scan \
@@ -86,11 +98,11 @@ motorbridge-cli scan \
   --timeout-ms 1000
 ```
 
-正常结果应找到 ID 1–7 共七个电机。推荐使用 `/dev/serial/by-id/...` 稳定路径代替可能变化的 `/dev/ttyACM0`。
+结果必须包含 ID 1–7 共七个电机。正式使用时，建议用 `/dev/serial/by-id/...` 替代可能变化的 `/dev/ttyACM0`。
 
-### 2. 按需标定零点
+### 2. 标定零点
 
-首次使用或零点需要重新标定时，停止其他串口程序，执行并按照标定工具提示操作：
+首次使用或零点发生变化时，停止其他串口程序并执行：
 
 ```bash
 lerobot-calibrate \
@@ -99,11 +111,11 @@ lerobot-calibrate \
   --robot.id=rebot_b601_vr
 ```
 
-标定时的 `robot.id` 应与遥操使用的 `--robot-id` 一致，默认均为 `rebot_b601_vr`。
+标定和遥操必须使用相同的 `robot.id`；默认值为 `rebot_b601_vr`。
 
 ### 3. 检查 VR 数据
 
-主机监听 TCP 端口，将 PICO 发送端指向主机可达的 IP 和端口 `63901`；`0.0.0.0` 是主机监听地址，不是发送端的连接目标。以下命令只检查 VR 数据，不连接机械臂：
+以下命令只检查 Tracking 数据，不连接机械臂：
 
 ```bash
 rebot-vr-print \
@@ -113,71 +125,98 @@ rebot-vr-print \
   --rate 10
 ```
 
-确认能够持续收到 Tracking 数据后退出；端口 63901 同一时间只能由一个程序监听。
+确认数据持续更新后退出。端口 `63901` 同一时间只能由一个程序监听。
 
-## 实机遥操
+### 4. 低速验证
+
+托住机械臂，完全松开 Grip 后启动。此命令跳过自动初始姿态和退出回零，将速度、加速度、映射比例与相对目标窗口限制在较低水平：
 
 ```bash
-# POS_VEL 位置速度模式（默认，加载 config/pos_vel.yaml）
+rebot-vr-teleoperate \
+  --robot-port /dev/ttyACM0 \
+  --motor-control-mode pos_vel \
+  --no-move-to-initial \
+  --no-return-to-zero-on-exit \
+  --position-scale 0.25 \
+  --orientation-scale 0.25 \
+  --max-joint-speed-rad-s 0.5 \
+  --max-joint-acceleration-rad-s2 1.0 \
+  --wrist-speed-rad-s 0.5 \
+  --wrist-acceleration-rad-s2 1.0 \
+  --max-relative-target-deg 5 \
+  --wrist-relative-target-deg 5
+```
+
+通过小幅手柄动作确认各关节的运动方向、零位和限位正确后，再使用正式配置。退出仍会默认失能电机，操作过程中需要持续支撑机械臂。
+
+## 日常遥操
+
+```bash
+# POS_VEL：默认模式，加载 config/pos_vel.yaml
 rebot-vr-teleoperate \
   --robot-port /dev/ttyACM0 \
   --motor-control-mode pos_vel
 
-# MIT 模式（加载 config/mit.yaml）
+# MIT：实验模式，加载 config/mit.yaml
 rebot-vr-teleoperate \
   --robot-port /dev/ttyACM0 \
   --motor-control-mode mit
 ```
 
-两种模式共用 VR 映射和 QP IK，命令行参数可覆盖 YAML。MIT 为实验模式，首次运行请托住机械臂并使用低增益验证。
-
-### 启动与退出
-
-启动默认移动到初始姿态，`--no-move-to-initial` 跳过。`Ctrl+C` 停止跟踪，q1–q6 回零后断开电机；再次 `Ctrl+C` 跳过回零直接断开。`--duration` 限时运行，退出默认失能电机。
+MIT 模式应先通过分轴调参验证增益和重力前馈，再进行 VR 遥操作。
 
 ### 手柄按键
 
 | 按键 | 行为 |
 | --- | --- |
 | Grip | 按住激活位姿跟踪，松开保持 |
-| Trigger | 夹爪开合（松开=-180°, 按到底=0°），独立于 Grip |
-| A / X | 返回初始姿态 |
-| B / Y | 返回六轴零点，闭合夹爪 |
+| Trigger | 夹爪开合；松开为 -180°，按到底为 0° |
+| A / X | 返回配置的初始姿态 |
+| B / Y | 返回六轴零点并闭合夹爪 |
 
-启动或跟踪中断后需先完全松开 Grip 再按住以重新激活。
+启动或 Tracking 中断后，需要先完全松开 Grip，再按住以重新激活跟踪。
+
+### 启动与退出
+
+- 默认启动：移动到配置的 `initial_q`；使用 `--no-move-to-initial` 跳过。
+- MIT 启动及退出回零同时发送轨迹位置和速度前馈，不使用遥操位置前视替换轨迹位置；保留速度、加速度、反馈距离及限位保护，到位或中断时清零速度。启动六轴统一使用 `max_joint_speed_rad_s` 和 `max_joint_acceleration_rad_s2`。
+- 第一次 `Ctrl+C`：停止跟踪，q1–q6 回零后断开电机。
+- 第二次 `Ctrl+C`：跳过回零，直接断开电机。
+- `--no-return-to-zero-on-exit`：退出时不回零；`--duration` 可限制运行时间。
+- 断开时默认失能电机，退出前必须支撑机械臂。
 
 ## 配置
 
-默认加载 `config/pos_vel.yaml`，`--motor-control-mode mit` 时加载 `config/mit.yaml`。命令行覆盖 YAML。
+程序根据 `--motor-control-mode` 加载对应 YAML，命令行显式参数的优先级更高：
 
-| 常用参数 | 默认值 |
-| --- | --- |
-| `--hand` (left/right) | right |
-| `--position-scale` / `--orientation-scale` | 1.0 |
-| `--ik-mode` (pose/position) | pose |
-| `--qp-solver` (scipy/osqp) | scipy |
-| `--max-joint-speed-rad-s` / `--wrist-speed-rad-s` | 5.5 / 12.0 |
-| `--fps` | 90 |
-| `--stale-timeout` | 0.2 s |
+| 关键配置 | POS_VEL | MIT |
+| --- | ---: | ---: |
+| 配置文件 | `config/pos_vel.yaml` | `config/mit.yaml` |
+| q1–q3 速度 / 加速度 | 5.5 rad/s / 20 rad/s² | 2.0 rad/s / 6 rad/s² |
+| q4–q6 速度 / 加速度 | 12 rad/s / 60 rad/s² | 4.0 rad/s / 20 rad/s² |
+| 臂部 / 腕部相对目标窗口 | 20° / 20° | 10° / 10° |
+| 位置滤波 / 死区 | 关闭 / 0 m | 4 Hz / 0.015 m |
+| QP 位置 / 姿态增益 | 10 / 8 | 4 / 2 |
+| 控制状态 | 推荐 | 实验性 |
 
-完整参数见 `--help`，默认值以 YAML 为准。
+两种模式默认均使用右手、`pose` IK、SciPy QP、90 Hz 主循环和 0.2 s 数据超时。实际值以当前 YAML 和 `rebot-vr-teleoperate --help` 为准。
 
-`--ik-mode position` 只允许 q1-q3 参与位置 IK，QP 对 q4-q6 施加零速度硬约束，
-因此腕部保持 Grip 激活时的反馈姿态。`pose` 模式仍使用全部六轴跟踪完整 TCP 位姿。
-两种模式都在 QP 和 MIT 最终发送层根据剩余限位距离限制制动速度，不会通过放宽腕部
-软件限位掩盖越界。
+自定义配置建议从对应模式复制，文件内的 `motor_control_mode` 必须和命令行一致：
 
-### MIT 模式（实验性）
+```bash
+cp config/pos_vel.yaml config/my_pos_vel.yaml
 
+rebot-vr-teleoperate \
+  --motor-control-mode pos_vel \
+  --control-config config/my_pos_vel.yaml \
+  --robot-port /dev/ttyACM0
 ```
-τ = Kp×(q_cmd − q_fb) + Kd×(v_cmd − v_fb) + τ_gravity
-```
 
-MIT 为实验模式，需实机标定重力前馈。详见[控制设计](assest/docs/CONTROL_DESIGN.md)。
+`pose` 模式使用全部六轴跟踪 TCP 位姿；`position` 模式仅使用 q1–q3 跟踪位置，q4–q6 保持激活 Grip 时的反馈姿态。详细约束与 MIT 控制原理见[控制设计](assest/docs/CONTROL_DESIGN.md)。
 
 ### MIT 分轴调参
 
-`rebot-mit-tune` 不启动 VR 或 QP，只让指定关节相对当前姿态做小幅、平滑、可重复的往返运动：
+`rebot-mit-tune` 不启动 VR 或 QP，只让指定关节在当前姿态附近进行小幅往返运动：
 
 ```bash
 rebot-mit-tune \
@@ -189,21 +228,29 @@ rebot-mit-tune \
   --csv-log logs/mit_tuning/q1-kp20-kd5.csv
 ```
 
-只有现场输入 `RUN` 后程序才连接并使能电机；连接后锁存当前姿态并开始测试。退出时保持当前反馈片刻并失能全部电机。详细流程和数据字段见 [MIT 分轴调参](assest/docs/MIT_TUNING.md)。
+程序只会在现场输入 `RUN` 后连接并使能电机。完整流程见 [MIT 分轴调参](assest/docs/MIT_TUNING.md)。
 
-## 诊断
-
-```bash
-rebot-vr-teleoperate --csv-log logs/session.csv            # 逐帧关节/IK/延迟
-rebot-vr-teleoperate --csv-log logs/session.csv --motor-diagnostics  # 含电机 I/O
-```
-
-## 夹爪测试
+## 诊断与工具
 
 ```bash
+# 逐帧关节、IK 和延迟数据
+rebot-vr-teleoperate --csv-log logs/session.csv
+
+# 夹爪动作测试
 rebot-gripper-test --robot-port /dev/ttyACM0 --target-deg -100
 rebot-gripper-test --robot-port /dev/ttyACM0 --target-deg 0
 ```
+
+## 常见问题
+
+| 现象 | 检查项 |
+| --- | --- |
+| 串口打不开 | 停止其他占用进程，检查用户串口权限，优先使用 `/dev/serial/by-id/...` |
+| 扫描不足七个电机 | 检查供电、CAN 接线、波特率和 ID 1–7 |
+| 收不到 Tracking | PICO 应连接主机真实局域网 IP；确认处于同一网络，端口 `63901` 未被占用或拦截 |
+| Grip 按下后不跟踪 | 先完全松开 Grip 再按住，并确认 Tracking 数据未超时 |
+| OSQP 不可用 | 安装 `uv pip install -e '.[qp]'`，或继续使用默认 SciPy 后端 |
+| 退出后机械臂下坠 | 默认行为是断开时失能电机；退出前必须托住机械臂 |
 
 ## 测试
 
@@ -211,7 +258,7 @@ rebot-gripper-test --robot-port /dev/ttyACM0 --target-deg 0
 python -m pytest -q
 ```
 
-## 文档
+## 详细文档
 
 - [系统架构](assest/docs/ARCHITECTURE.md)
 - [核心模块 API](assest/docs/API_REFERENCE.md)

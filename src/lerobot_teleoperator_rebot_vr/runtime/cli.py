@@ -323,8 +323,6 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
 
     runtime = parser.add_argument_group("runtime")
     runtime.add_argument("--fps", type=float, default=90.0)
-    runtime.add_argument("--motor-diagnostics", action="store_true",
-                         help="record final motor API calls and raw cached states; requires --csv-log")
     runtime.add_argument("--duration", type=float, default=0.0, help="0 runs until Ctrl-C")
     runtime.add_argument("--status-rate", type=float, default=5.0)
     runtime.add_argument(
@@ -387,8 +385,6 @@ def validate_args(args: argparse.Namespace) -> None:
     """Reject unsafe or internally inconsistent command-line settings."""
     ShutdownPolicy(args.disable_attempts, args.disable_interval_s, args.disable_feedback_wait_s,
                    request_feedback=args.disable_request_feedback)
-    if args.motor_diagnostics and args.csv_log is None:
-        raise ValueError("--motor-diagnostics requires --csv-log")
     _validate_named_values(
         {
             "stale-timeout": args.stale_timeout,

@@ -92,7 +92,6 @@ safety:
 
 # 运行
 runtime:
-  motor_diagnostics: false  # 需同时设置 csv_log
   fps: 90.0
   duration: 0.0  # 0: 持续运行
   status_rate: 5.0
