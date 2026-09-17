@@ -1,96 +1,125 @@
-# rebot-vr-teleoperate 参数说明
+# 运行参数
 
-`rebot-vr-teleoperate` 常用参数如下；完整参数见 `rebot-vr-teleoperate --help`。
+[架构](ARCHITECTURE.md) · [控制流程](CONTROL_DESIGN.md) · [QP](INVERSE_KINEMATICS_DESIGN.md)
 
-控制参数按电机模式保存在 `config/pos_vel.yaml` 和 `config/mit.yaml`。运行时会根据
-`--motor-control-mode` 自动加载对应文件，命令行显式参数的优先级更高：
+默认值来自 [pos_vel.yaml](../../config/pos_vel.yaml) 和 [mit.yaml](../../config/mit.yaml)，核对日期：2026-09-17。
+
+## 配置优先级
+
+默认模式 pos_vel。CLI 显式值覆盖 YAML；Python 配置类不自动读取 YAML。完整选项见 `rebot-vr-teleoperate --help`。
 
 ```bash
+# 自动加载对应模式的配置
 rebot-vr-teleoperate --motor-control-mode pos_vel
 rebot-vr-teleoperate --motor-control-mode mit
 
-# 自定义配置文件（文件内 motor_control_mode 必须与命令行一致）
+# 指定配置；文件内 motor_control_mode 必须与所选模式一致
 rebot-vr-teleoperate --motor-control-mode mit --control-config config/mit.yaml
 ```
 
-| 参数 | 默认 | 最大值 | 说明 |
+速度、加速度、相对目标和 fps 要求有限且大于零，没有固定校验上限。默认值不代表硬件或安全极限。
+
+## 位姿映射与运动限制
+
+| 参数 | POS_VEL 默认 | MIT 默认 | 含义 |
 |---|---|---|---|
-| `--position-scale` | `1.0` | — | 手柄位移 → TCP 位移倍率 |
-| `--orientation-scale` | `1.0` | — | 手柄旋转 → 末端旋转倍率 |
-| `--max-joint-speed-rad-s` | `5.5` | **5.5** | q1–q3 速度约束（rad/s）；起始位姿移动时作用于全部六轴 |
-| `--max-joint-acceleration-rad-s2` | `20` | **20** | q1–q3 加速度约束（rad/s²）；起始位姿移动时作用于全部六轴 |
-| `--wrist-speed-rad-s` | `12` | **12** | q4–q6 速度约束（rad/s） |
-| `--wrist-acceleration-rad-s2` | POS_VEL `8` / MIT `60` | **60** | q4–q6 加速度约束（rad/s²） |
-| `--max-relative-target-deg` | `20` | **20** | 臂部 follower 相对目标钳制（deg） |
-| `--wrist-relative-target-deg` | `20` | **20** | q4–q6 follower 相对目标钳制（deg） |
-| `--gripper-relative-target-deg` | 跟随臂部 | **20** | 夹爪 follower 相对目标钳制（deg）；缺省跟随 `--max-relative-target-deg` |
-| `--gripper-open-deg` | `-180` | — | Trigger=0 的开口端点；CLI 强制 `-270 ≤ open < closed ≤ 0` |
-| `--gripper-closed-deg` | `0` | — | Trigger=1 与 B/Y 回零的闭合端点 |
-| `--gripper-max-speed-deg-s` | `1200` | **1200** | 夹爪速度上限（°/s） |
-| `--gripper-max-acceleration-deg-s2` | `5000` | 推荐 ≤50000 | 夹爪加速度上限（°/s²） |
-| `--gripper-torque-ratio` | `0.2` | `1.0` | FORCE_POS 最大夹持力比例；CLI 强制 [0, 1] |
-| `--motor-control-mode` | `pos_vel` | `pos_vel/mit` | q1-q6 底层模式；MIT 由插件发送速度目标和重力前馈 |
-| `--mit-kp` | `25 30 30 10 10 10` | 每轴 `500` | q1-q6 实机整定后的 MIT 位置增益 |
-| `--mit-kd` | `5 5 4 0.5 0.5 0.5` | 每轴 `5` | q1-q6 实机整定后的 MIT 速度增益 |
-| `--mit-torque-limit-nm` | `27 27 27 7 7 7` | URDF effort | 重力前馈项绝对限幅（N·m），不是 PD 总扭矩限幅 |
-| `--mit-gravity-scale` | `1.0` | `2.0` | Pinocchio 重力项倍率；CLI 强制 [0, 2] |
-| `--mit-gravity-ramp-s` | `0.0` | — | 首条 MIT 命令后重力前馈渐入时间；0 表示与参考控制器相同，直接应用 `g(q)` |
-| `--mit-dynamics-urdf` | 打包模型 | — | 替换六轴惯性 URDF；更换末端负载后必须更新 |
-| `--fps` | `90` | ≤120 | 主循环频率（Hz） |
-| `--qp-solver` | `scipy` | `scipy/osqp` | QP 后端；OSQP 需安装 `.[qp]` |
-| `--ik-mode` | `pose` | `pose/position` | 完整位姿或纯 XYZ 任务 |
-| `--qp-position-cost` | `20` | — | TCP 位置任务权重 |
-| `--qp-orientation-cost` | `2` | — | 正常区域 TCP 姿态任务权重 |
-| `--qp-orientation-cost-min` | `0.05` | — | 严重奇异区域姿态权重下限 |
-| `--qp-position-gain` | `10` | — | 位置误差反馈增益（1/s），与目标线速度前馈相加 |
-| `--qp-orientation-gain` | `8` | — | 姿态误差反馈增益（1/s），与目标角速度前馈相加 |
-| `--arm-command-lookahead-ms` | `50` | — | q1–q3 POS_VEL 位置命令前视时间 |
-| `--wrist-command-lookahead-ms` | `25` | — | q4–q6 POS_VEL 位置命令前视时间 |
-| `--qp-damping`（别名 `--qp-damping-min`） | `1e-3` | — | 正常区域最小阻尼 |
-| `--qp-damping-max` | `0.1` | — | 严重奇异区域最大阻尼 |
-| `--singularity-threshold` | `0.08` | — | 开始自适应的归一化 `sigma_min` |
-| `--singularity-critical-threshold` | `0.02` | — | 达到最大保护的归一化 `sigma_min` |
-| `--singularity-characteristic-length-m` | `0.3` | — | Jacobian 线速度行的尺度归一化长度（m） |
-| `--qp-smoothness-cost` | `0.05` | — | 速度连续性正则 |
-| `--qp-posture-cost` | `0.01` | — | 回归 nominal 姿态正则 |
-| `--joint-limit-margin-deg` | `2` | — | QP 关节限位内缩余量（deg） |
-| `--qp-max-solve-time-ms` | `8` | — | 单次 QP 时间预算；超预算结果被丢弃 |
-| `--feedback-fault-max-consecutive` | `5` | — | HOLD 连续故障帧数达到后受控退出 |
-| `--csv-log` | 不记录 | — | 异步写入逐帧关节、IK 与链路延迟 CSV，并在结束时生成 `_latency_summary.csv` |
-| `--status-rate` | `5` | — | 状态行输出频率（Hz） |
+| `--position-scale` | 1 | 1 | 手柄相对位移倍率 |
+| `--orientation-scale` | 1 | 1 | 手柄相对旋转倍率；设为 0 不等于 position IK |
+| `--position-filter-hz` | 0 | 4 | 位置低通截止频率，Hz；0 关闭 |
+| `--orientation-filter-hz` | 0 | 0 | 姿态低通截止频率，Hz；0 关闭 |
+| `--position-deadband-m` | 0 | 0.015 | 位置死区，m |
+| `--orientation-deadband-deg` | 0 | 0 | 姿态死区，deg |
+| `--max-joint-speed-rad-s` | 5.5 | 2 | q1–q3 速度限制，rad/s；启动移动用于全部六轴 |
+| `--max-joint-acceleration-rad-s2` | 20 | 6 | q1–q3 加速度限制，rad/s²；启动移动用于全部六轴 |
+| `--wrist-speed-rad-s` | 12 | 2 | q4–q6 速度限制，rad/s |
+| `--wrist-acceleration-rad-s2` | 60 | 6 | q4–q6 加速度限制，rad/s² |
+| `--max-relative-target-deg` | 20 | 10 | q1–q3 命令相对反馈的最大距离，deg |
+| `--wrist-relative-target-deg` | 20 | 10 | q4–q6 命令相对反馈的最大距离，deg |
+| `--arm-command-lookahead-ms` | 50 | 50 | ACTIVE 中 q1–q3 的位置前视时间，ms |
+| `--wrist-command-lookahead-ms` | 25 | 25 | ACTIVE 中 q4–q6 的位置前视时间，ms |
 
-> [!IMPORTANT]
-> “最大值”列为**实机验证的安全上限**，电机硬件空载上限见[最大速度与加速度](#最大速度与加速度)。CLI 仅强制校验 `--gripper-torque-ratio`（[0, 1]）与夹爪端点（`-270 ≤ open < closed ≤ 0`），不校验速度、加速度、fps 等上限；超出后电机物理上无法达到。
+腕部参数为 None 时回退到臂部值。前视对两种模式的 ACTIVE 有效，不用于启动/退出回零。控制器使用 0.9 倍反馈窗口；窗口 × fps 不能作为电机最大速度。
 
-## 最大速度与加速度
+## QP 与奇异性
 
-B601-DM 电机硬件上限：
-
-| 关节 | 电机 | 空载最大 | 额定 |
+| 参数 | POS_VEL 默认 | MIT 默认 | 含义 |
 |---|---|---|---|
-| q1–q3 | 达妙 DM-J4340P-2EC（40:1） | **5.5 rad/s**（315°/s） | 3.8 rad/s |
-| q4–q6 | 达妙 DM-J4310-2EC（10:1） | **20.9 rad/s**（1200°/s） | 12.6 rad/s |
-| 夹爪 | 达妙 DM-J4310-2EC（10:1） | **20.9 rad/s**（1200°/s） | 12.6 rad/s |
+| `--ik-mode` | pose | pose | pose：六轴位姿任务；position：仅 q1–q3 解位置，锁定腕部 |
+| `--qp-solver` | scipy | scipy | scipy 或 osqp；OSQP 需安装 `.[qp]` |
+| `--qp-position-cost` | 20 | 20 | 位置任务权重 |
+| `--qp-orientation-cost` | 2 | 2 | 正常区域姿态任务权重 |
+| `--qp-orientation-cost-min` | 0.05 | 0.05 | 奇异区域姿态权重下限 |
+| `--qp-position-gain` | 10 | 4 | 位置误差到目标线速度的增益，1/s |
+| `--qp-orientation-gain` | 8 | 2 | 姿态误差到目标角速度的增益，1/s |
+| `--qp-damping` | 0.001 | 0.001 | 最小阻尼；别名 `--qp-damping-min` |
+| `--qp-damping-max` | 0.1 | 0.1 | 最大阻尼 |
+| `--qp-smoothness-cost` | 0.05 | 0.05 | 相邻 QP 速度差的代价 |
+| `--qp-posture-cost` | 0.01 | 0.01 | 偏离 nominal 关节姿态的代价 |
+| `--singularity-threshold` | 0.08 | 0.08 | 开始自适应的归一化最小奇异值 |
+| `--singularity-critical-threshold` | 0.02 | 0.02 | 达到最大阻尼、最小姿态权重的阈值 |
+| `--singularity-characteristic-length-m` | 0.3 | 0.3 | Jacobian 线速度行归一化长度，m |
+| `--joint-limit-margin-deg` | 2 | 2 | 关节限位内缩余量，deg |
+| `--qp-max-solve-time-ms` | 8 | 8 | 求解时间预算，ms；超时结果不采用 |
 
-生产/采集推荐上限（保留余量）：
+要求 `0 ≤ critical < threshold`、`0 ≤ damping_min ≤ damping_max`。SciPy 返回后检查耗时，超时丢弃。
 
-```bash
-rebot-vr-teleoperate \
-  --max-joint-speed-rad-s 5.5 --max-joint-acceleration-rad-s2 20 \
-  --wrist-speed-rad-s 12 --wrist-acceleration-rad-s2 60 \
-  --max-relative-target-deg 20
-```
+## MIT 参数
 
-夹爪达到电机空载上限（1200°/s）且不放宽臂部保护：
+六个数依次对应 q1–q6；夹爪独立配置。
 
-```bash
-rebot-vr-teleoperate \
-  --gripper-max-speed-deg-s 1200 \
-  --gripper-max-acceleration-deg-s2 20000 \
-  --gripper-relative-target-deg 20
-```
+| 参数 | 默认 | 代码校验 / 含义 |
+|---|---|---|
+| `--mit-kp` | 25 30 30 10 10 10 | 每轴 [0, 500]；位置误差增益 |
+| `--mit-kd` | 5 5 4 0.5 0.5 0.5 | 每轴 [0, 5]；速度误差增益 |
+| `--mit-torque-limit-nm` | 27 27 27 7 7 7 | 每轴大于 0，且不超过上述固定上限；仅限制前馈扭矩 |
+| `--mit-gravity-scale` | 1 | [0, 2]；重力前馈倍率 |
+| `--mit-gravity-ramp-s` | 1.5 | 非负；重力前馈渐入时间，s；0 立即应用 |
+| `--mit-dynamics-urdf` | 内置模型 | 动力学 URDF 路径；不同于 IK 的 `--urdf` |
 
-臂部与夹爪命令均依次经过三层钳制：QP/整形器速度与加速度约束 → controller 命令-反馈窗口（相对目标 × 0.9）→ follower/插件发送层相对目标。相对目标对应等效速度上限 `相对目标 × fps`：默认 90 fps、20° 相对目标对应 1800°/s，满足 1200°/s。以 20000°/s² 加速到 1200°/s 需 36°，小于默认 180° 行程（−180° → 0°）。
+`mit_torque_limit_nm` 仅限制前馈，不限制电机 PD 与前馈的总扭矩。
 
-> [!TIP]
-> 相对目标须 ≥ 最大速度 ÷ fps，否则实际速度受限；加速度建议从低值分档上调（10 → 20 → 40 → 60），每档观察跟踪误差与跳变冲击。
+## 启动与退出回零
+
+| 参数 | POS_VEL 默认 | MIT 默认 | 含义 |
+|---|---|---|---|
+| `--initial-q` | 0 0.8 0.8 0 0 0 | 0 0.8 0.8 0.2 0 0 | RS 参考姿态，rad；下发前 q2/q3 取反 |
+| `--move-to-initial` | 开启 | 开启 | `--no-move-to-initial` 跳过启动移动 |
+| `--initial-move-tolerance-deg` | 2 | 3 | 六轴到位误差容差，deg |
+| `--initial-move-timeout` | 30 | 30 | 启动/回零移动总超时，s |
+| `--initial-stall-timeout` | 5 | 5 | 误差长时间未充分改善的超时，s |
+| `--initial-feedback-request-hz` | 20 | 20 | 启动阶段每个电机主动请求反馈的频率上限；0 不限频 |
+| `--return-to-zero-on-exit` | 开启 | 开启 | 正常 Ctrl+C 时尝试回零；第二次 Ctrl+C 中止 |
+| `--exit-zero-speed-rad-s` | 0.5 | 0.5 | 退出回零速度上限，rad/s |
+| `--exit-zero-acceleration-rad-s2` | 1 | 1 | 退出回零加速度上限，rad/s² |
+
+启动六轴使用臂部速度/加速度；退出取退出值、臂部值、腕部值的最小值。MIT 两阶段均为位置整形、零目标速度、重力前馈。反馈请求限频不改变主循环频率；退出条件见 [控制流程](CONTROL_DESIGN.md)。
+
+## 夹爪
+
+| 参数 | 两种模式默认 | 含义 |
+|---|---|---|
+| `--gripper-control-mode` | force_pos | force_pos 或 mit，独立于六轴模式 |
+| `--gripper-open-deg` | -180 | Trigger=0 的电机角度端点 |
+| `--gripper-closed-deg` | 0 | Trigger=1 和 B/Y 闭合端点 |
+| `--gripper-max-speed-deg-s` | 1200 | 速度限制，deg/s |
+| `--gripper-max-acceleration-deg-s2` | 5000 | 加速度限制，deg/s² |
+| `--gripper-relative-target-deg` | None | 回退到臂部相对目标窗口，deg |
+| `--gripper-torque-ratio` | 0.2 | force_pos 扭矩比例，[0, 1] |
+
+要求 `-270 ≤ open < closed ≤ 0`，单位是电机角度。启动保持反馈；主循环收到新鲜 Tracking 后按 Trigger 更新。
+
+## 安全、运行与记录
+
+| 参数 | 两种模式默认 | 含义 |
+|---|---|---|
+| `--grip-press` / `--grip-release` | 0.60 / 0.40 | 激活/释放阈值；恢复后必须先释放 |
+| `--stale-timeout` | 0.2 | PC 接收时间判断的 Tracking 超时，s |
+| `--feedback-fault-max-consecutive` | 5 | 连续反馈异常达到该帧数时请求退出 |
+| `--feedback-fault-settle-time` | 0.25 | 持续反馈故障退出前的保持阶段，s |
+| `--disable-torque-on-disconnect` | 开启 | 普通退出尝试失能；持续反馈故障路径保留扭矩 |
+| `--fps` | 90 | 主循环目标频率，Hz；不保证实测达到 |
+| `--duration` | 0 | 主循环持续时间，s；0 持续运行 |
+| `--status-rate` | 5 | 控制台状态输出频率，Hz |
+| `--csv-log` | None | 主循环逐帧 CSV；相对路径以启动时工作目录为准 |
+
+CSV 字段与限制见 [API](API_REFERENCE.md)。当前不支持 `--backend`、`--motor-diagnostics`。

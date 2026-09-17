@@ -1,146 +1,73 @@
-# B601-DM 全六轴 TCP 差分 QP IK
+# QP 逆运动学
 
-## 控制点
+[控制流程](CONTROL_DESIGN.md) · [参数](PARAMETERS.md)
 
-控制点固定为 URDF 中的 `gripper_end`。每个有效反馈周期使用实际六轴 `q_actual` 计算 TCP 位置、TCP 旋转和 Jacobian。默认 `pose` 模式中六个关节同时参与位置和姿态任务；`position` 模式只允许 q1-q3 参与三维位置任务，并硬约束 `dq4=dq5=dq6=0`。
+实现：[kinematics.py](../../src/lerobot_teleoperator_rebot_vr/ik/kinematics.py)、[coordination.py](../../src/lerobot_teleoperator_rebot_vr/ik/coordination.py)。
 
-## 目标生成
+## 任务与误差
 
-Grip 激活时保存 VR 参考位姿和实际 TCP 参考位姿。平移使用坐标变换后的相对位置，旋转使用 `Log/Exp` 的 SO(3) 相对旋转，不使用四元数分量差或欧拉角差。
+控制点为 `gripper_end`。pose 模式求解六轴；position 模式只允许 q1–q3 运动，腕部保持激活时目标。
 
-## QP
+Pinocchio Jacobian 使用 `LOCAL_WORLD_ALIGNED`：前三行为线速度，后三行为角速度。位置差和姿态误差均在基座/世界系表达：
 
 ```text
 e_p = p_target - p_actual
-e_o = Log(R_target R_actual.T)
-v_p* = v_target + Kp*e_p
-w_o* = w_target + Ko*e_o
-
-min ||Wp(Jp*dq-v_p*)||² + ||Wo(Jo*dq-w_o*)||²
-  + λd||dq||² + λs||dq-dq_previous||²
-  + λq||q_actual+dt*dq-q_nominal||²
+e_o = Log(R_target * R_actual.T)
+v* = v_target + Kp * e_p
+w* = w_target + Ko * e_o
 ```
 
-`position` 模式删除第二项并锁定腕部速度，而不是简单地把手柄 `orientation_scale` 设为零。后者在 `pose` 模式下仍会要求机械臂保持 Grip 激活瞬间的 TCP 姿态。
+目标速度来自相邻目标位姿之差 / PC 接收时间间隔；捕获参考、epoch 改变或时间无效时清零。这里的 Kp/Ko 是任务增益，与电机 MIT Kp/Kd 不同。
 
-`v_target` 由相邻滤波后目标位置除以 PC `received_monotonic_ns` 间隔得到；`w_target`
-使用世界系 `Log(R_target_new R_target_previous.T) / dt_sample`。Grip 捕获、epoch 变化或无效
-时间间隔时前馈清零。误差反馈默认 `Kp=10 1/s`、`Ko=8 1/s`，因此持续匀速目标不再
-只能依靠已经形成的位置误差追赶。
-
-约束：
+## 目标函数
 
 ```text
-q_lower + margin <= q_actual + dt*dq <= q_upper - margin
--dq_max <= dq <= dq_max
--ddq_max*dt <= dq-dq_previous <= ddq_max*dt
--sqrt(2*ddq_max*(q-safe_lower)) <= dq
-dq <= sqrt(2*ddq_max*(safe_upper-q))
-position mode: dq[3:6] = 0
+min ||Wp*(Jp*dq-v*)||² + ||Wo*(Jo*dq-w*)||²
+  + damping * ||dq||²
+  + smoothness_cost * ||dq-dq_previous||²
+  + posture_cost * ||q_actual+dt*dq-q_nominal||²
 ```
 
-最后两项分别是基于剩余限位距离的制动速度边界和 position 模式的腕部锁定。
-实际制动上限会再预留一个 QP 周期的 `ddq_max*dt` 速度，避免离散周期中制动边界与
-上一帧加速度约束只差一个时间步而变成不可行。匹配当前 generation 的 QP 结果失败时，
-旧 QP 速度历史会清零；MIT 最终发送层仍按真实发送周期完成物理减速。
-QP 使用 follower 的实际软件限位，而不是更宽的 URDF 几何限位。位置默认权重高于姿态。
-姿态任务为软目标，目标不可达时平滑饱和。`dq=0` 在反馈位于安全限位内时始终是可行保持解。
+Wp/Wo 是任务 cost 的平方根。位置和姿态为加权软任务；position 模式删除姿态项，并硬约束 `dq[3:6]=0`。
 
-## Jacobian 与奇异性
-
-Pinocchio 返回 `gripper_end` 的 `LOCAL_WORLD_ALIGNED` Jacobian：
+## 硬约束
 
 ```text
-J = [J_linear_world; J_angular_world]
+safe_lower <= q_actual + dt*dq <= safe_upper
+-speed <= dq <= speed
+-acceleration*dt <= dq-dq_previous <= acceleration*dt
+
+brake_upper = max(0, sqrt(2*acceleration*(safe_upper-q)) - acceleration*dt)
+brake_lower = -max(0, sqrt(2*acceleration*(q-safe_lower)) - acceleration*dt)
+brake_lower <= dq <= brake_upper
 ```
 
-这与世界系 `p_target-p_actual` 和左乘误差
-`Log(R_target R_actual.T)` 一致。由于原始 6D Jacobian 混合 m/s 与 rad/s，不能直接把
-其奇异值当成无量纲指标。监测使用：
+限位取 URDF 与 follower 的交集，再内缩 margin。反馈已进入余量区时，对应安全边界取当前反馈位置。
+
+各约束取交集；交集为空返回 `infeasible_constraints`。即使位置未越界，加速度约束也可能不允许及时停车。降低姿态权重不能解决硬约束冲突。
+
+`dt` 取相邻 QP 提交的 PC 单调时间间隔，首帧取控制周期，裁剪到 `[1e-6, 0.05]` s。
+
+## 奇异性自适应
 
 ```text
-pose:     J_monitor = [J_linear / characteristic_length; J_angular]
-position: J_monitor =  J_linear[:,0:3] / characteristic_length
+pose:     J_monitor = [J_linear / L; J_angular]
+position: J_monitor = J_linear[:, :3] / L
+
+x = clip((sigma_min-critical)/(threshold-critical), 0, 1)
+h = x²*(3-2*x)
+damping = damping_max + h*(damping_min-damping_max)
+orientation_weight = orientation_min + h*(orientation_normal-orientation_min)
 ```
 
-默认 characteristic length 为 0.30 m。对打包 B601 URDF 的限位内离线采样显示，起始
-姿态 `[0,-0.8,-0.8,0,0,0]` 的 pose `sigma_min≈0.276`；因此默认在 0.08 开始保护，
-在 0.02 达到最大保护。condition number 仅用于诊断，自适应由 `sigma_min` 驱动。
+默认 L=0.3 m，threshold=0.08，critical=0.02。接近奇异点时阻尼从 0.001 增至 0.1，姿态权重从 2 降至 0.05，位置权重保持 20。position 模式姿态权重恒为 0。condition number 仅用于诊断。
 
-## 连续自适应
+## 结果到命令
 
-令：
+求解器计算 `q_next=q_actual+dq*dt` 做约束和校验。协调器每次只保留一个未消费请求，按样本去重；接受结果须成功、有限、未超求解预算，且 generation/sequence/sample_id 匹配。
 
-```text
-x = clip((sigma_min - sigma_critical) /
-         (sigma_threshold - sigma_critical), 0, 1)
-h = x²(3-2x)
-```
+POS_VEL 使用消费结果时的反馈生成 `q_goal=q_actual+dq*lookahead`。MIT 用最终加速度和制动限幅后的速度重建活动轴位置。两者再受关节限位与反馈窗口限制；position 模式不更新腕部目标。
 
-`h` 是端点一阶导数为零的 smoothstep。参数连续变化：
+匹配当前请求的失败结果会清零 QP 速度历史；MIT 发送层请求减速。ACTIVE 不重复通用位置整形。启动、回位和夹爪走各自位置轨迹，见 [控制流程](CONTROL_DESIGN.md)。
 
-```text
-damping = damping_max + h(damping_min-damping_max)
-orientation_weight = orientation_min +
-                     h(orientation_normal-orientation_min)
-```
-
-远离奇异位形时使用 `damping_min=1e-3`、orientation weight 2.0；严重接近奇异位形时
-使用 `damping_max=0.1`、orientation weight 0.05，保持 position cost 20 不变。
-`position` 模式的 orientation weight 恒为零。
-
-求解器仍计算 `q_next = q_actual + dt*dq` 用于约束和结果校验。实机 ACTIVE 命令使用
-反馈基准上的分轴 POS_VEL 前视：
-
-```text
-q_goal[0:3] = q_actual[0:3] + dq[0:3] * 0.050
-q_goal[3:6] = q_actual[3:6] + dq[3:6] * 0.025
-```
-
-在 `position` 模式中 `dq[3:6]` 恒为零，因此 q4-q6 保持当前反馈值；上述六轴前视仅在
-`pose` 模式下全部生效。MIT 最终发送层会基于最新反馈再次应用同一制动速度边界，并用
-限幅后的速度重建前视位置，覆盖 QP 求解后到实际发送之间的跟踪误差。
-
-随后裁剪关节限位和 command-feedback 窗口。ACTIVE 不再把该短目标交给通用位置整形器
-重复执行速度/加速度限制；QP 已约束 `dq` 与 `dq-dq_previous`，而 follower 的 POS_VEL
-仍接收分轴速度上限。A/B 回位和 VR 主循环夹爪保持原有位置整形；启动姿态只整形
-q1-q6，夹爪保持实际反馈位置。Grip 捕获首帧只同步
-实际关节姿态、命令和 nominal 并清零历史速度，下一样本才提交 QP。
-
-`dt` 来自主机单调时钟测得的相邻 QP 提交间隔，不使用 VR 上游时间戳；首个请求使用
-主控制循环实际周期。进入请求前统一裁剪到 `[1e-6, 0.05]` s，避免零周期和长暂停破坏
-速度/加速度约束。
-
-## 请求和结果隔离
-
-请求包含 `generation`、`sequence`、`sample_id`、目标 TCP 位姿与 twist、`q_actual`、
-`dq_previous`、`dt`、`q_nominal` 和提交时间。结果必须同时匹配当前 generation、在途
-sequence 和 sample_id，并通过有限值、求解时间和约束检查。失败或过期结果不会更新
-任何关节。提交时间随结果返回，用于上报从提交到主线程实际采用结果的 `result_age_ms`。
-
-## 参数
-
-| 参数 | 默认值 |
-|---|---:|
-| `--qp-solver` | `scipy` |
-| `--ik-mode` | `pose` |
-| `--qp-position-cost` | `20` |
-| `--qp-orientation-cost` | `2` |
-| `--qp-orientation-cost-min` | `0.05` |
-| `--qp-position-gain` | `10 1/s` |
-| `--qp-orientation-gain` | `8 1/s` |
-| `--arm-command-lookahead-ms` | `50 ms` |
-| `--wrist-command-lookahead-ms` | `25 ms` |
-| `--qp-damping-min`（兼容 `--qp-damping`） | `1e-3` |
-| `--qp-damping-max` | `0.1` |
-| `--singularity-threshold` | `0.08` |
-| `--singularity-critical-threshold` | `0.02` |
-| `--singularity-characteristic-length-m` | `0.3` |
-| `--qp-smoothness-cost` | `0.05` |
-| `--qp-posture-cost` | `0.01` |
-| `--joint-limit-margin-deg` | `2` |
-| `--qp-max-solve-time-ms` | `8` |
-
-两种模式共用同一个反馈式 QP、安全约束、异步 worker 和完整六轴目标发布路径；`pose`
-使用六个活动变量，`position` 仅允许前三个变量非零。当前没有引入 manipulability task、
-Placo 或额外依赖。
+默认求解预算 8 ms。SciPy 返回后检查耗时，超时丢弃结果；这不是硬实时中断。全部默认值见 [参数表](PARAMETERS.md)。
