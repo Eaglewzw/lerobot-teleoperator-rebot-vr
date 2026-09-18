@@ -137,8 +137,10 @@ split profile 的初始策略是保持已经验证的 MIT 电机层参数，只�
 | `--gripper-max-acceleration-deg-s2` | 5000 | 加速度限制，deg/s² |
 | `--gripper-relative-target-deg` | None | 回退到臂部相对目标窗口，deg |
 | `--gripper-torque-ratio` | 0.2 | force_pos 扭矩比例，[0, 1] |
+| `--gripper-mit-kp` | 8 | MIT 位置增益，[0, 500]；仅 MIT 使用 |
+| `--gripper-mit-kd` | 0.3 | MIT 速度阻尼，[0, 5]；仅 MIT 使用 |
 
-要求 `-270 ≤ open < closed ≤ 0`，单位是电机角度。启动保持反馈；主循环收到新鲜 Tracking 后按 Trigger 更新。
+要求 `-270 ≤ open < closed ≤ 0`，单位是电机角度。启动保持反馈；主循环收到新鲜 Tracking 后按 Trigger 更新。`mit_split.yaml` 当前显式选择夹爪 MIT；该模式发送整形后的位置、零目标速度、配置的 `gripper_mit_kp/kd` 和零前馈力矩，`gripper_torque_ratio` 不生效。速度与加速度参数仍用于上位机位置目标整形。
 
 ## 安全、运行与记录
 

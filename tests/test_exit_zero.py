@@ -200,6 +200,19 @@ def test_normal_ctrl_c_stops_vr_then_returns_before_disconnect(runner):
     assert runner.robots[0].config.disable_torque_on_disconnect
 
 
+def test_runtime_forwards_gripper_mit_gains(runner):
+    runner.args.gripper_mit_kp = 11.0
+    runner.args.gripper_mit_kd = 0.45
+
+    real.main()
+
+    config = runner.robots[0].config
+    assert config.gripper_mit_kp == pytest.approx(11.0)
+    assert config.gripper_mit_kd == pytest.approx(0.45)
+    assert config.mit_kp[-1] == pytest.approx(11.0)
+    assert config.mit_kd[-1] == pytest.approx(0.45)
+
+
 @pytest.mark.parametrize("reason", ["feedback", "error", "sigterm", "double_sigint", "disabled", "duration"])
 def test_non_normal_exits_do_not_return_to_zero(runner, reason):
     def update(*args):

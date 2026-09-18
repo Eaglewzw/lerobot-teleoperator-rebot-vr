@@ -72,6 +72,8 @@ startup:
 gripper:
   gripper_control_mode: force_pos  # force_pos | mit
   gripper_torque_ratio: 0.2  # [0, 1]
+  gripper_mit_kp: 8.0  # 仅 gripper_control_mode=mit 使用
+  gripper_mit_kd: 0.3  # 仅 gripper_control_mode=mit 使用
   gripper_open_deg: -180.0  # Trigger=0
   gripper_closed_deg: 0.0  # Trigger=1
   gripper_max_speed_deg_s: 1200.0

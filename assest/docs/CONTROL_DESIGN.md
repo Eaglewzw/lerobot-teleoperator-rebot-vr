@@ -79,6 +79,11 @@ gripper_goal = open_deg + Trigger * (closed_deg - open_deg)
 
 默认 Trigger=0 为 -180°，Trigger=1 为 0°；角度含义依赖零点标定。
 
+夹爪 `force_pos` 下发送位置、速度上限和 `gripper_torque_ratio`。夹爪
+`mit` 下发送整形后的位置、零目标速度、`gripper_mit_kp/kd` 和零前馈
+力矩；此时 `gripper_torque_ratio` 不使用，但夹爪速度/加速度仍限制上位机
+位置目标的变化率。
+
 | 操作 | 六轴 | 夹爪 |
 |---|---|---|
 | 启动 | 移动到 initial_q | 每帧保持反馈位置 |

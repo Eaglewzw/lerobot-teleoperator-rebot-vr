@@ -144,6 +144,18 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
     robot.add_argument("--gripper-control-mode", choices=("force_pos", "mit"), default="force_pos")
     robot.add_argument("--gripper-torque-ratio", type=float, default=0.2,
                        help="FORCE_POS maximum grip force ratio in [0, 1]")
+    robot.add_argument(
+        "--gripper-mit-kp",
+        type=float,
+        default=8.0,
+        help="gripper MIT position gain in [0, 500]",
+    )
+    robot.add_argument(
+        "--gripper-mit-kd",
+        type=float,
+        default=0.3,
+        help="gripper MIT velocity gain in [0, 5]",
+    )
     robot.add_argument("--max-relative-target-deg", type=float, default=20.0)
     robot.add_argument("--initial-q", type=float, nargs=6,
                        default=tuple(DEFAULT_INITIAL_Q_REFERENCE_RAD),
@@ -486,6 +498,10 @@ def validate_args(args: argparse.Namespace) -> None:
     # Gripper positions use the follower's negative-degree convention.
     if not 0.0 <= args.gripper_torque_ratio <= 1.0:
         raise ValueError("gripper-torque-ratio must be in [0, 1]")
+    if not np.isfinite(args.gripper_mit_kp) or not 0.0 <= args.gripper_mit_kp <= 500.0:
+        raise ValueError("gripper-mit-kp must be finite and in [0, 500]")
+    if not np.isfinite(args.gripper_mit_kd) or not 0.0 <= args.gripper_mit_kd <= 5.0:
+        raise ValueError("gripper-mit-kd must be finite and in [0, 5]")
     if not np.all(np.isfinite([args.gripper_open_deg, args.gripper_closed_deg])):
         raise ValueError("gripper open and closed positions must be finite")
     if not -270.0 <= args.gripper_open_deg < args.gripper_closed_deg <= 0.0:

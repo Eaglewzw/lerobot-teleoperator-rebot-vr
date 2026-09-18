@@ -34,6 +34,8 @@ def test_motor_mode_automatically_loads_matching_yaml() -> None:
     assert pos_vel.wrist_acceleration_rad_s2 == pytest.approx(60.0)
     assert pos_vel.gripper_max_speed_deg_s == pytest.approx(1200.0)
     assert pos_vel.gripper_max_acceleration_deg_s2 == pytest.approx(5000.0)
+    assert pos_vel.gripper_mit_kp == pytest.approx(8.0)
+    assert pos_vel.gripper_mit_kd == pytest.approx(0.3)
     assert mit.control_config.name == "mit.yaml"
     assert mit.motor_control_mode == "mit"
     assert mit.mit_kp == pytest.approx([25, 30, 30, 10, 10, 10])
@@ -44,10 +46,26 @@ def test_motor_mode_automatically_loads_matching_yaml() -> None:
 
 def test_explicit_cli_parameter_overrides_mode_yaml() -> None:
     args = build_parser().parse_args(
-        ["--motor-control-mode", "mit", "--mit-kp", "20", "20", "20", "5", "5", "5"]
+        [
+            "--motor-control-mode",
+            "mit",
+            "--mit-kp",
+            "20",
+            "20",
+            "20",
+            "5",
+            "5",
+            "5",
+            "--gripper-mit-kp",
+            "11",
+            "--gripper-mit-kd",
+            "0.45",
+        ]
     )
 
     assert args.mit_kp == pytest.approx([20, 20, 20, 5, 5, 5])
+    assert args.gripper_mit_kp == pytest.approx(11.0)
+    assert args.gripper_mit_kd == pytest.approx(0.45)
 
 
 def test_yaml_files_cover_every_applicable_cli_parameter() -> None:

@@ -20,10 +20,10 @@ vr_source:
 cartesian_mapping:
   position_scale: 1
   orientation_scale: 1
-  position_filter_hz: 4.0  # 0: 关闭滤波
-  orientation_filter_hz: 4.0  # 0: 关闭滤波
+  position_filter_hz: 0.0  # 0: 关闭滤波
+  orientation_filter_hz: 0.0  # 0: 关闭滤波
   position_deadband_m: 0.008
-  orientation_deadband_deg: 0.3
+  orientation_deadband_deg: 0.003
 
 # split 逆运动学
 qp_ik:
@@ -79,8 +79,10 @@ startup:
 
 # 夹爪
 gripper:
-  gripper_control_mode: force_pos  # force_pos | mit
-  gripper_torque_ratio: 0.2  # [0, 1]
+  gripper_control_mode: mit  # force_pos | mit
+  gripper_torque_ratio: 0.2  # 仅 force_pos 使用；MIT 模式下忽略
+  gripper_mit_kp: 10.0
+  gripper_mit_kd: 0.4
   gripper_open_deg: -180.0  # Trigger=0
   gripper_closed_deg: 0.0  # Trigger=1
   gripper_max_speed_deg_s: 1200.0

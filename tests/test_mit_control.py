@@ -137,6 +137,25 @@ def test_mit_dispatcher_sends_six_axis_velocity_and_gravity_but_force_pos_grippe
     assert sent == action
 
 
+def test_mit_dispatcher_uses_configured_gripper_mit_gains() -> None:
+    robot = _FakeRobot()
+    robot.config.gripper_control_mode = "mit"
+    robot.config.gripper_mit_kp = 11.0
+    robot.config.gripper_mit_kd = 0.45
+    dispatcher = _dispatcher(robot)
+    dispatcher.set_observation(robot.get_observation())
+    action = {f"{name}.pos": 0.0 for name in (*ARM_JOINT_NAMES, GRIPPER_NAME)}
+    action[f"{GRIPPER_NAME}.pos"] = -90.0
+
+    dispatcher.send_action(action)
+
+    assert robot.motors[GRIPPER_NAME].force_pos_calls == []
+    assert len(robot.motors[GRIPPER_NAME].mit_calls) == 1
+    assert robot.motors[GRIPPER_NAME].mit_calls[0] == pytest.approx(
+        (np.deg2rad(-90.0), 0.0, 11.0, 0.45, 0.0)
+    )
+
+
 def test_mit_dispatcher_preserves_relative_target_limit() -> None:
     robot = _FakeRobot(max_relative_target=5.0)
     dispatcher = _dispatcher(robot)
@@ -313,6 +332,8 @@ def test_mit_cli_defaults_to_pos_vel_and_validates_protocol_ranges() -> None:
     )
     assert mit_defaults.mit_gravity_scale == pytest.approx(1.0)
     assert mit_defaults.mit_gravity_ramp_s == pytest.approx(1.5)
+    assert mit_defaults.gripper_mit_kp == pytest.approx(8.0)
+    assert mit_defaults.gripper_mit_kd == pytest.approx(0.3)
     validate_args(defaults)
     validate_args(mit_defaults)
 
@@ -325,3 +346,11 @@ def test_mit_cli_defaults_to_pos_vel_and_validates_protocol_ranges() -> None:
     )
     with pytest.raises(ValueError, match="MIT torque limits"):
         validate_args(invalid_torque)
+
+    invalid_gripper_kp = parser.parse_args(["--gripper-mit-kp", "501"])
+    with pytest.raises(ValueError, match="gripper-mit-kp"):
+        validate_args(invalid_gripper_kp)
+
+    invalid_gripper_kd = parser.parse_args(["--gripper-mit-kd", "5.1"])
+    with pytest.raises(ValueError, match="gripper-mit-kd"):
+        validate_args(invalid_gripper_kd)
