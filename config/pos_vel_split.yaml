@@ -1,5 +1,5 @@
-# reBot B601-DM VR 遥操作 | POS_VEL 默认（pose）
-# 兼容默认入口；显式组合配置见 pos_vel_pose.yaml 和 pos_vel_split.yaml。
+# reBot B601-DM VR 遥操作 | POS_VEL + split
+# 保守起始 profile，需在实机小幅动作和 CSV 诊断后逐步调高。
 motor_control_mode: pos_vel
 
 # 机器人
@@ -16,24 +16,24 @@ vr_source:
   host: 0.0.0.0
   port: 63901
 
-# 位姿映射
+# 位姿映射：split 的腕部直接跟随相对旋转，默认增加适度滤波和小死区。
 cartesian_mapping:
   position_scale: 1.0
   orientation_scale: 1.0
-  position_filter_hz: 0.0  # 0: 关闭滤波
-  orientation_filter_hz: 0.0  # 0: 关闭滤波
-  position_deadband_m: 0.0
-  orientation_deadband_deg: 0.0
+  position_filter_hz: 4.0  # 0: 关闭滤波
+  orientation_filter_hz: 4.0  # 0: 关闭滤波
+  position_deadband_m: 0.005
+  orientation_deadband_deg: 0.5
 
-# QP 逆运动学
+# split 逆运动学
 qp_ik:
-  qp_solver: scipy  # scipy | osqp
-  ik_mode: pose  # pose: TCP 位姿；position: TCP 位置；split: joint4 位置 + 相对腕姿
-  qp_position_cost: 20.0
-  qp_orientation_cost: 2.0
-  qp_orientation_cost_min: 0.05  # 奇异区姿态权重下限
-  qp_position_gain: 10.0
-  qp_orientation_gain: 8.0
+  qp_solver: scipy  # scipy | osqp；仅用于 q1-q3 位置 QP
+  ik_mode: split
+  qp_position_cost: 20.0  # q1-q3 joint4 位置任务
+  qp_orientation_cost: 2.0  # split 不使用，保留完整配置结构
+  qp_orientation_cost_min: 0.05  # split 不使用
+  qp_position_gain: 6.0  # q1-q3 位置误差增益
+  qp_orientation_gain: 4.0  # split 中作为 q4-q6 腕部误差增益
   qp_damping: 0.001
   qp_damping_max: 0.1
   qp_smoothness_cost: 0.05
@@ -45,14 +45,14 @@ qp_ik:
   qp_max_solve_time_ms: 8.0
   urdf: null  # null: 使用内置模型
 
-# 运动限制
+# 运动限制：低于 pose 默认值，确认方向与连续性后再逐步调高。
 motion_limits:
-  max_joint_speed_rad_s: 5.5  # q1-q3
-  max_joint_acceleration_rad_s2: 20.0  # q1-q3
-  wrist_speed_rad_s: 12.0  # q4-q6
-  wrist_acceleration_rad_s2: 60.0  # q4-q6
-  max_relative_target_deg: 20.0  # q1-q3 命令-反馈窗口
-  wrist_relative_target_deg: 20.0  # q4-q6 命令-反馈窗口
+  max_joint_speed_rad_s: 3.0  # q1-q3
+  max_joint_acceleration_rad_s2: 10.0  # q1-q3
+  wrist_speed_rad_s: 4.0  # q4-q6
+  wrist_acceleration_rad_s2: 15.0  # q4-q6
+  max_relative_target_deg: 12.0  # q1-q3 命令-反馈窗口
+  wrist_relative_target_deg: 12.0  # q4-q6 命令-反馈窗口
   arm_command_lookahead_ms: 50.0
   wrist_command_lookahead_ms: 25.0
 

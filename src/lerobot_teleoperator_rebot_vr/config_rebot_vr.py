@@ -85,8 +85,8 @@ class RebotVRConfig:
             raise ValueError("hand_side must be 'left' or 'right'")
         if self.qp_solver not in ("scipy", "osqp"):
             raise ValueError("qp_solver must be scipy or osqp")
-        if self.ik_mode not in ("pose", "position"):
-            raise ValueError("ik_mode must be pose or position")
+        if self.ik_mode not in ("pose", "position", "split"):
+            raise ValueError("ik_mode must be pose, position, or split")
         if not 0.0 <= self.clutch_release_threshold < self.clutch_threshold <= 1.0:
             raise ValueError(
                 "clutch thresholds must satisfy 0 <= release < press <= 1"

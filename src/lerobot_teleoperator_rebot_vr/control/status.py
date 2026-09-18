@@ -54,6 +54,7 @@ def build_running_status(
     qp: QPRequestCoordinator,
     config: CartesianControlConfig,
 ) -> CartesianControlStatus:
+    ik_result = qp.last_result
     orientation_error_deg: float | None = None
     tcp_position_error_m: float | None = None
     if mapping.state is TeleopState.ACTIVE and mapping.target is not None:
@@ -67,8 +68,15 @@ def build_running_status(
                 ).magnitude()
             )
         )
+        if (
+            config.ik_mode == "split"
+            and ik_result is not None
+            and np.isfinite(ik_result.orientation_error_rad)
+        ):
+            orientation_error_deg = float(
+                np.rad2deg(ik_result.orientation_error_rad)
+            )
 
-    ik_result = qp.last_result
     consumed_ns = qp.last_result_consumed_monotonic_ns
     sample_received_ns = (
         0 if ik_result is None else ik_result.sample_received_monotonic_ns
@@ -106,6 +114,11 @@ def build_running_status(
         command_deg=np.concatenate((command_deg, [gripper.command_deg])),
         orientation_error_deg=orientation_error_deg,
         ik_mode=config.ik_mode,
+        wrist_clip_deg=(
+            None
+            if ik_result is None or not np.isfinite(ik_result.wrist_clip_rad)
+            else float(np.rad2deg(ik_result.wrist_clip_rad))
+        ),
         sigma_min=finite_ik_diagnostic(ik_result, "sigma_min"),
         condition_number=finite_ik_diagnostic(
             ik_result, "condition_number", allow_infinite=True

@@ -1,6 +1,6 @@
-# reBot B601-DM VR 遥操作 | POS_VEL 默认（pose）
-# 兼容默认入口；显式组合配置见 pos_vel_pose.yaml 和 pos_vel_split.yaml。
-motor_control_mode: pos_vel
+# reBot B601-DM VR 遥操作 | MIT + pose
+# 完整 TCP 位姿 QP 的显式 profile；参数与兼容默认 config/mit.yaml 一致。
+motor_control_mode: mit
 
 # 机器人
 robot:
@@ -20,20 +20,20 @@ vr_source:
 cartesian_mapping:
   position_scale: 1.0
   orientation_scale: 1.0
-  position_filter_hz: 0.0  # 0: 关闭滤波
+  position_filter_hz: 4.0  # 0: 关闭滤波
   orientation_filter_hz: 0.0  # 0: 关闭滤波
-  position_deadband_m: 0.0
+  position_deadband_m: 0.015
   orientation_deadband_deg: 0.0
 
-# QP 逆运动学
+# pose QP 逆运动学
 qp_ik:
   qp_solver: scipy  # scipy | osqp
-  ik_mode: pose  # pose: TCP 位姿；position: TCP 位置；split: joint4 位置 + 相对腕姿
+  ik_mode: pose
   qp_position_cost: 20.0
   qp_orientation_cost: 2.0
   qp_orientation_cost_min: 0.05  # 奇异区姿态权重下限
-  qp_position_gain: 10.0
-  qp_orientation_gain: 8.0
+  qp_position_gain: 4.0
+  qp_orientation_gain: 2.0
   qp_damping: 0.001
   qp_damping_max: 0.1
   qp_smoothness_cost: 0.05
@@ -47,20 +47,29 @@ qp_ik:
 
 # 运动限制
 motion_limits:
-  max_joint_speed_rad_s: 5.5  # q1-q3
-  max_joint_acceleration_rad_s2: 20.0  # q1-q3
-  wrist_speed_rad_s: 12.0  # q4-q6
-  wrist_acceleration_rad_s2: 60.0  # q4-q6
-  max_relative_target_deg: 20.0  # q1-q3 命令-反馈窗口
-  wrist_relative_target_deg: 20.0  # q4-q6 命令-反馈窗口
+  max_joint_speed_rad_s: 2.0  # q1-q3
+  max_joint_acceleration_rad_s2: 6.0  # q1-q3
+  wrist_speed_rad_s: 2.0  # q4-q6
+  wrist_acceleration_rad_s2: 6.0  # q4-q6
+  max_relative_target_deg: 10.0  # q1-q3 命令-反馈窗口
+  wrist_relative_target_deg: 10.0  # q4-q6 命令-反馈窗口
   arm_command_lookahead_ms: 50.0
   wrist_command_lookahead_ms: 25.0
 
+# MIT 控制（与 IK 算法无关，先用分轴调参验证）
+mit:
+  mit_kp: [25.0, 30.0, 30.0, 10.0, 10.0, 10.0]  # q1-q6
+  mit_kd: [5.0, 5.0, 4.0, 0.5, 0.5, 0.5]  # q1-q6
+  mit_torque_limit_nm: [27.0, 27.0, 27.0, 7.0, 7.0, 7.0]  # q1-q6
+  mit_gravity_scale: 1.0  # [0, 2]
+  mit_gravity_ramp_s: 1.5  # 0: 立即启用
+  mit_dynamics_urdf: null  # null: 使用内置模型
+
 # 启动与退出
 startup:
-  initial_q: [0.0, 0.8, 0.8, 0.0, 0.0, 0.0]  # q1-q6, rad
+  initial_q: [0.0, 0.8, 0.8, 0.2, 0.0, 0.0]  # q1-q6, rad
   move_to_initial: true
-  initial_move_tolerance_deg: 2.0
+  initial_move_tolerance_deg: 3.0
   initial_move_timeout: 30.0
   initial_stall_timeout: 5.0
   initial_feedback_request_hz: 20.0  # 0: 不限频

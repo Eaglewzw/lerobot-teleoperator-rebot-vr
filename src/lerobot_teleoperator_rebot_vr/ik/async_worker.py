@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass
+from typing import Protocol
 
 import numpy as np
 
@@ -103,6 +104,7 @@ class IKResult:
     condition_number: float = float("nan")
     damping: float = float("nan")
     orientation_weight: float = float("nan")
+    wrist_clip_rad: float = 0.0
     joint_velocity_rad_s: np.ndarray | None = None
     submitted_monotonic_ns: int = 0
     sample_received_monotonic_ns: int = 0
@@ -131,12 +133,18 @@ class IKResult:
             raise ValueError("IK monotonic timestamps must be non-negative")
         if not np.isfinite(self.solve_time_ms) or self.solve_time_ms < 0.0:
             raise ValueError("solve_time_ms must be finite and non-negative")
+        if not np.isfinite(self.wrist_clip_rad) or self.wrist_clip_rad < 0.0:
+            raise ValueError("wrist_clip_rad must be finite and non-negative")
+
+
+class IKSolver(Protocol):
+    def solve(self, **kwargs): ...
 
 
 class LatestOnlyQPIKWorker:
-    """Latest-only asynchronous worker for six-axis TCP QP IK."""
+    """Latest-only asynchronous worker for a six-axis IK strategy."""
 
-    def __init__(self, solver, *, max_joint_speed_rad_s: np.ndarray,
+    def __init__(self, solver: IKSolver, *, max_joint_speed_rad_s: np.ndarray,
                  max_joint_acceleration_rad_s2: np.ndarray) -> None:
         self.solver = solver
         self.max_speed = np.asarray(max_joint_speed_rad_s, dtype=np.float64).copy()
@@ -202,6 +210,7 @@ class LatestOnlyQPIKWorker:
                 max_joint_acceleration=self.max_acceleration,
                 target_linear_velocity_m_s=request.target_linear_velocity_m_s,
                 target_angular_velocity_rad_s=request.target_angular_velocity_rad_s,
+                q_seed=request.q_seed,
             )
             q = np.asarray(solve_result.q_target_rad, dtype=np.float64)
             valid = q.shape == (6,) and np.all(np.isfinite(q))
@@ -232,6 +241,9 @@ class LatestOnlyQPIKWorker:
                 condition_number=float(solve_result.condition_number),
                 damping=float(solve_result.damping),
                 orientation_weight=float(solve_result.orientation_weight),
+                wrist_clip_rad=float(
+                    getattr(solve_result, "wrist_clip_rad", 0.0)
+                ),
                 joint_velocity_rad_s=solve_result.joint_velocity_rad_s,
                 submitted_monotonic_ns=request.submitted_monotonic_ns,
                 sample_received_monotonic_ns=(
@@ -259,3 +271,6 @@ class LatestOnlyQPIKWorker:
                 worker_started_monotonic_ns=started,
                 completed_monotonic_ns=completed,
             )
+
+
+__all__ = ["IKRequest", "IKResult", "IKSolver", "LatestOnlyQPIKWorker"]

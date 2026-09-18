@@ -68,6 +68,82 @@ def test_yaml_files_cover_every_applicable_cli_parameter() -> None:
         assert configured == destinations - excluded
 
 
+@pytest.mark.parametrize(
+    ("filename", "motor_mode", "ik_mode"),
+    (
+        ("pos_vel_pose.yaml", "pos_vel", "pose"),
+        ("pos_vel_split.yaml", "pos_vel", "split"),
+        ("mit_pose.yaml", "mit", "pose"),
+        ("mit_split.yaml", "mit", "split"),
+    ),
+)
+def test_named_control_profiles_are_complete_and_loadable(
+    filename: str, motor_mode: str, ik_mode: str
+) -> None:
+    parser = build_parser()
+    config_path = Path(__file__).parents[1] / "config" / filename
+    destinations = {
+        action.dest for action in parser._actions if action.dest != "help"
+    }
+    excluded = {"control_config"}
+    if motor_mode == "pos_vel":
+        excluded.update(MIT_PARAMETERS)
+
+    configured = set(
+        _flatten_mode_config(yaml.safe_load(config_path.read_text()), config_path)
+    )
+    assert configured == destinations - excluded
+
+    args = parser.parse_args(
+        [
+            "--motor-control-mode",
+            motor_mode,
+            "--control-config",
+            str(config_path),
+        ]
+    )
+    assert args.motor_control_mode == motor_mode
+    assert args.ik_mode == ik_mode
+    validate_args(args)
+
+
+def test_mit_profiles_load_their_own_motor_settings() -> None:
+    config_dir = Path(__file__).parents[1] / "config"
+    parser = build_parser()
+
+    for filename in ("mit_pose.yaml", "mit_split.yaml"):
+        config_path = config_dir / filename
+        configured = yaml.safe_load(config_path.read_text())
+        args = parser.parse_args(
+            [
+                "--motor-control-mode",
+                "mit",
+                "--control-config",
+                str(config_path),
+            ]
+        )
+
+        assert args.mit_kp == pytest.approx(configured["mit"]["mit_kp"])
+        assert args.mit_kd == pytest.approx(configured["mit"]["mit_kd"])
+        assert args.mit_torque_limit_nm == pytest.approx(
+            configured["mit"]["mit_torque_limit_nm"]
+        )
+        assert args.mit_gravity_scale == pytest.approx(
+            configured["mit"]["mit_gravity_scale"]
+        )
+
+
+@pytest.mark.parametrize("mode", ("pos_vel", "mit"))
+def test_explicit_pose_profile_matches_compatibility_default(mode: str) -> None:
+    config_dir = Path(__file__).parents[1] / "config"
+    default_path = config_dir / f"{mode}.yaml"
+    pose_path = config_dir / f"{mode}_pose.yaml"
+
+    assert _flatten_mode_config(
+        yaml.safe_load(default_path.read_text()), default_path
+    ) == _flatten_mode_config(yaml.safe_load(pose_path.read_text()), pose_path)
+
+
 def test_custom_config_must_match_selected_mode(tmp_path: Path) -> None:
     config = tmp_path / "wrong.yaml"
     config.write_text("motor_control_mode: pos_vel\n", encoding="utf-8")

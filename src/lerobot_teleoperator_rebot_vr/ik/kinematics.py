@@ -34,6 +34,7 @@ class QPSolveResult:
     condition_number: float
     damping: float
     orientation_weight: float
+    wrist_clip_rad: float = 0.0
 
 
 class FullBodyQPIKSolver:
@@ -130,7 +131,9 @@ class FullBodyQPIKSolver:
               dq_previous: object, dt: float, q_nominal: object,
               max_joint_speed: object, max_joint_acceleration: object,
               target_linear_velocity_m_s: object | None = None,
-              target_angular_velocity_rad_s: object | None = None) -> QPSolveResult:
+              target_angular_velocity_rad_s: object | None = None,
+              q_seed: object | None = None) -> QPSolveResult:
+        del q_seed
         started = time.monotonic_ns()
         q = np.asarray(q_actual, dtype=np.float64)
         dq_prev = np.asarray(dq_previous, dtype=np.float64)
@@ -404,6 +407,7 @@ class B601Kinematics:
         if self.model.nq != NUM_ARM_JOINTS:
             raise ValueError(f"expected a 6-DOF B601 model, got nq={self.model.nq}")
         self._thread_local = threading.local()
+        self._frame_ids: dict[str, int] = {}
         self.frame_id = self.model.getFrameId(end_effector_frame)
         if self.frame_id >= self.model.nframes:
             raise ValueError(f"end-effector frame not found: {end_effector_frame}")
@@ -427,22 +431,64 @@ class B601Kinematics:
 
     def forward_kinematics(self, q_rad: object) -> tuple[np.ndarray, np.ndarray]:
         """Return the complete gripper_end TCP pose."""
-        q = self._joint_vector(q_rad)
-        data = self._thread_data()
-        self.pin.framesForwardKinematics(self.model, data, q)
-        pose = data.oMf[self.frame_id]
-        return np.asarray(pose.translation, dtype=float).copy(), np.asarray(pose.rotation, dtype=float).copy()
+        return self._frame_pose(q_rad, self.frame_id)
 
     def tcp_jacobian(self, q_rad: object) -> np.ndarray:
         """Return gripper_end Jacobian as [linear_world; angular_world]."""
+        return self._frame_jacobian(q_rad, self.frame_id)
+
+    def wrist_anchor_pose(self, q_rad: object) -> tuple[np.ndarray, np.ndarray]:
+        """Return the joint4-axis pose used by split IK.
+
+        The frame translation is independent of q4-q6.  Its rotation includes
+        q4, so callers that need the pre-wrist reference orientation should set
+        q4-q6 to zero first.
+        """
+        return self._frame_pose(q_rad, self._frame_id("joint4"))
+
+    def wrist_anchor_jacobian(self, q_rad: object) -> np.ndarray:
+        """Return the joint4-axis Jacobian in world-aligned coordinates."""
+        return self._frame_jacobian(q_rad, self._frame_id("joint4"))
+
+    def wrist_relative_rotation(self, q_rad: object) -> np.ndarray:
+        """Return gripper orientation relative to the pre-q4 wrist frame."""
+        q = self._joint_vector(q_rad)
+        anchor_q = q.copy()
+        anchor_q[3:] = 0.0
+        _, anchor_rotation = self.wrist_anchor_pose(anchor_q)
+        _, tcp_rotation = self.forward_kinematics(q)
+        return anchor_rotation.T @ tcp_rotation
+
+    def _frame_pose(
+        self, q_rad: object, frame_id: int
+    ) -> tuple[np.ndarray, np.ndarray]:
+        q = self._joint_vector(q_rad)
+        data = self._thread_data()
+        self.pin.framesForwardKinematics(self.model, data, q)
+        pose = data.oMf[frame_id]
+        return (
+            np.asarray(pose.translation, dtype=float).copy(),
+            np.asarray(pose.rotation, dtype=float).copy(),
+        )
+
+    def _frame_jacobian(self, q_rad: object, frame_id: int) -> np.ndarray:
         q = self._joint_vector(q_rad)
         data = self._thread_data()
         self.pin.computeJointJacobians(self.model, data, q)
         self.pin.updateFramePlacements(self.model, data)
         jacobian = self.pin.getFrameJacobian(
-            self.model, data, self.frame_id, self.pin.ReferenceFrame.LOCAL_WORLD_ALIGNED
+            self.model, data, frame_id, self.pin.ReferenceFrame.LOCAL_WORLD_ALIGNED
         )
         return np.asarray(jacobian, dtype=np.float64)[:, :NUM_ARM_JOINTS].copy()
+
+    def _frame_id(self, frame_name: str) -> int:
+        frame_id = self._frame_ids.get(frame_name)
+        if frame_id is None:
+            frame_id = int(self.model.getFrameId(frame_name))
+            if frame_id >= self.model.nframes:
+                raise ValueError(f"frame not found: {frame_name}")
+            self._frame_ids[frame_name] = frame_id
+        return frame_id
 
     def tcp_pose_error(self, q_rad: object, target_position: object, target_rotation: object) -> np.ndarray:
         """World-frame SE(3) error [position; rotation-vector], target minus actual."""

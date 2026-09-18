@@ -85,8 +85,10 @@ CSV_FIELDNAMES = (
     *TIMESTAMP_FIELDNAMES,
     "control_loop_hz",
     "teleop_state",
+    "ik_mode",
     "ik_success",
     "ik_reason",
+    "wrist_clip_deg",
     "ik_result_consumed_this_cycle",
     *(f"{kind}_{joint}_deg" for kind in ("actual", "target", "command") for joint in JOINT_NAMES),
     "position_error_m",
@@ -133,8 +135,10 @@ def build_csv_row(status: CartesianControlStatus) -> dict[str, object]:
         {
             "control_loop_hz": _optional_float(status.control_loop_hz),
             "teleop_state": status.state.value,
+            "ik_mode": status.ik_mode,
             "ik_success": "" if status.ik_success is None else status.ik_success,
             "ik_reason": status.ik_reason,
+            "wrist_clip_deg": _optional_float(status.wrist_clip_deg),
             "ik_result_consumed_this_cycle": (
                 status.ik_result_consumed_this_cycle
             ),

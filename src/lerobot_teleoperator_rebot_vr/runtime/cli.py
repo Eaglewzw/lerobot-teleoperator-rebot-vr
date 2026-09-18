@@ -194,9 +194,13 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
     ik.add_argument("--qp-solver", choices=("scipy", "osqp"), default="scipy")
     ik.add_argument(
         "--ik-mode",
-        choices=("pose", "position"),
+        choices=("pose", "position", "split"),
         default="pose",
-        help="pose tracks XYZ and orientation; position tracks XYZ only",
+        help=(
+            "pose tracks TCP XYZ/orientation; position tracks TCP XYZ only; "
+            "split tracks joint4 XYZ with q1-q3 and wrist-relative orientation "
+            "with q4-q6"
+        ),
     )
     ik.add_argument("--qp-position-cost", type=float, default=20.0)
     ik.add_argument("--qp-orientation-cost", type=float, default=2.0)
@@ -562,13 +566,18 @@ def status_line(status: CartesianControlStatus) -> str:
 
     summary = []
     if status.tcp_position_error_m is not None:
-        summary.append(f"TCP={status.tcp_position_error_m * 1000.0:.1f}mm")
+        task_name = "J4" if status.ik_mode == "split" else "TCP"
+        summary.append(
+            f"{task_name}={status.tcp_position_error_m * 1000.0:.1f}mm"
+        )
     if status.orientation_error_deg is not None:
         summary.append(f"rot={status.orientation_error_deg:.1f}deg")
     if status.dq_norm_rad_s is not None:
         summary.append(f"dq={status.dq_norm_rad_s:.2f}rad/s")
     if status.qp_solve_time_ms is not None:
         summary.append(f"solve={status.qp_solve_time_ms:.2f}ms")
+    if status.wrist_clip_deg is not None and status.wrist_clip_deg > 1e-6:
+        summary.append(f"wrist_clip={status.wrist_clip_deg:.1f}deg")
     if status.feedback_read_ms is not None:
         summary.append(f"read={status.feedback_read_ms:.2f}ms")
     if status.send_action_ms is not None:

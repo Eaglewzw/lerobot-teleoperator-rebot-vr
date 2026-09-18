@@ -9,6 +9,7 @@ from .arm_command import update_arm_position_command
 from ..ik.async_worker import LatestOnlyQPIKWorker
 from ..ik.coordination import QPRequestCoordinator
 from ..ik.kinematics import FullBodyQPIKSolver
+from ..ik.split_solver import SplitIKSolver
 from ..vr.adapter import sample_is_fresh, trigger_value, vr_frame_from_raw_action
 from ..vr.models import VRFrame
 from ..vr.pose_mapping import RelativePoseMapper, TeleopState
@@ -73,9 +74,8 @@ class FullBodyQPIKController:
         if ik_worker is not None:
             self.worker = ik_worker
         else:
-            qp = FullBodyQPIKSolver(
-                kinematics, solver=self.config.qp_solver,
-                ik_mode=self.config.ik_mode,
+            solver_options = dict(
+                solver=self.config.qp_solver,
                 position_cost=self.config.qp_position_cost,
                 orientation_cost=self.config.qp_orientation_cost,
                 orientation_cost_min=self.config.qp_orientation_cost_min,
@@ -97,6 +97,14 @@ class FullBodyQPIKController:
                 joint_lower_limit_rad=self.lower_limit_rad,
                 joint_upper_limit_rad=self.upper_limit_rad,
             )
+            if self.config.ik_mode == "split":
+                qp = SplitIKSolver(kinematics, **solver_options)
+            else:
+                qp = FullBodyQPIKSolver(
+                    kinematics,
+                    ik_mode=self.config.ik_mode,
+                    **solver_options,
+                )
             speed = np.concatenate(
                 (
                     np.full(3, self.config.max_joint_speed_rad_s),
@@ -213,7 +221,14 @@ class FullBodyQPIKController:
         dt_s = float(np.clip(dt_s, 1e-6, 0.05))
 
         fk_started_ns = time.monotonic_ns()
-        tcp_position, ee_rotation = self.kinematics.forward_kinematics(q_control_actual_rad)
+        tcp_position, ee_rotation = self.kinematics.forward_kinematics(
+            q_control_actual_rad
+        )
+        mapping_position = tcp_position
+        if self.config.ik_mode == "split":
+            mapping_position, _ = self.kinematics.wrist_anchor_pose(
+                q_control_actual_rad
+            )
         fk_finished_ns = time.monotonic_ns()
         now_value_ns = time.monotonic_ns() if now_ns is None else int(now_ns)
 
@@ -242,7 +257,7 @@ class FullBodyQPIKController:
             self.mapper.reset(require_release=True)
         mapping_started_ns = time.monotonic_ns()
         mapping = self.mapper.update(
-            frame, tcp_position, ee_rotation, now_ns=now_ns
+            frame, mapping_position, ee_rotation, now_ns=now_ns
         )
         mapping_finished_ns = time.monotonic_ns()
 
@@ -400,7 +415,7 @@ class FullBodyQPIKController:
             q_command_rad=self._q_command_rad,
             gripper_actual_deg=gripper_actual_deg,
             gripper=self.gripper,
-            tcp_position_m=tcp_position,
+            tcp_position_m=mapping_position,
             ee_rotation=ee_rotation,
             worker=self.worker,
             qp=self.qp,

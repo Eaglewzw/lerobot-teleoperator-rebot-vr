@@ -1,5 +1,5 @@
-# reBot B601-DM VR 遥操作 | POS_VEL 默认（pose）
-# 兼容默认入口；显式组合配置见 pos_vel_pose.yaml 和 pos_vel_split.yaml。
+# reBot B601-DM VR 遥操作 | POS_VEL + pose
+# 完整 TCP 位姿 QP 的显式 profile；参数与兼容默认 config/pos_vel.yaml 一致。
 motor_control_mode: pos_vel
 
 # 机器人
@@ -25,10 +25,10 @@ cartesian_mapping:
   position_deadband_m: 0.0
   orientation_deadband_deg: 0.0
 
-# QP 逆运动学
+# pose QP 逆运动学
 qp_ik:
   qp_solver: scipy  # scipy | osqp
-  ik_mode: pose  # pose: TCP 位姿；position: TCP 位置；split: joint4 位置 + 相对腕姿
+  ik_mode: pose
   qp_position_cost: 20.0
   qp_orientation_cost: 2.0
   qp_orientation_cost_min: 0.05  # 奇异区姿态权重下限

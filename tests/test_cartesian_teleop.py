@@ -851,6 +851,10 @@ def test_adaptive_qp_cli_defaults_modes_and_validation() -> None:
     _validate_args(position)
     assert position.ik_mode == "position"
 
+    split = parser.parse_args(["--ik-mode", "split"])
+    _validate_args(split)
+    assert split.ik_mode == "split"
+
     invalid = parser.parse_args(
         [
             "--singularity-threshold",

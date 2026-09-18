@@ -2,7 +2,7 @@
 
 [架构](ARCHITECTURE.md) · [控制流程](CONTROL_DESIGN.md) · [QP](INVERSE_KINEMATICS_DESIGN.md)
 
-默认值来自 [pos_vel.yaml](../../config/pos_vel.yaml) 和 [mit.yaml](../../config/mit.yaml)，核对日期：2026-09-17。
+兼容默认值来自 [pos_vel.yaml](../../config/pos_vel.yaml) 和 [mit.yaml](../../config/mit.yaml)，两者保持 pose IK。显式组合 profile 见 `config/{pos_vel,mit}_{pose,split}.yaml`。核对日期：2026-09-17。
 
 ## 配置优先级
 
@@ -15,9 +15,41 @@ rebot-vr-teleoperate --motor-control-mode mit
 
 # 指定配置；文件内 motor_control_mode 必须与所选模式一致
 rebot-vr-teleoperate --motor-control-mode mit --control-config config/mit.yaml
+
+# 推荐用完整 profile 切换 IK，不只覆盖 --ik-mode
+rebot-vr-teleoperate --motor-control-mode pos_vel --control-config config/pos_vel_split.yaml
+rebot-vr-teleoperate --motor-control-mode mit --control-config config/mit_split.yaml
 ```
 
 速度、加速度、相对目标和 fps 要求有限且大于零，没有固定校验上限。默认值不代表硬件或安全极限。
+
+## 组合 profile 与参数归属
+
+| 电机控制 | pose QP | split IK |
+|---|---|---|
+| POS_VEL | `pos_vel_pose.yaml` | `pos_vel_split.yaml` |
+| MIT | `mit_pose.yaml` | `mit_split.yaml` |
+
+`pos_vel.yaml` 与 `pos_vel_pose.yaml` 等价，`mit.yaml` 与 `mit_pose.yaml` 等价；前两个短文件名继续作为自动加载默认。完整文件有意保留少量重复，使每次实验只需保存一个 YAML 就能复现，不依赖隐式合并顺序。
+
+参数按职责分为三组：
+
+- 电机层：`mit_kp`、`mit_kd`、前馈力矩上限和重力参数。它们不因 pose/split 自动变化。
+- 解算与映射层：滤波、死区、QP 增益/代价、奇异性参数。它们应跟随 IK profile 调整。
+- 安全与下发层：速度、加速度、命令-反馈窗口和前视。profile 可以给出更保守的值，但不能把它们当作硬件安全上限。
+
+split profile 的初始策略是保持已经验证的 MIT 电机层参数，只降低或平滑 IK 目标：
+
+| 参数 | POS_VEL split | MIT split | 目的 |
+|---|---:|---:|---|
+| 位置 / 姿态滤波 | 4 / 4 Hz | 4 / 4 Hz | 抑制 joint4 目标与腕姿抖动 |
+| 位置 / 姿态死区 | 0.005 m / 0.5° | 0.008 m / 0.5° | 避免静止噪声持续驱动 |
+| q1–q3 位置增益 | 6 | 4 | joint4 位置闭环 |
+| q4–q6 腕部增益 | 4 | 2 | 相对腕姿闭环 |
+| q1–q3 速度 / 加速度 | 3 / 10 | 2 / 6 | 保守起调值，rad/s 与 rad/s² |
+| q4–q6 速度 / 加速度 | 4 / 15 | 2 / 6 | 保守起调值，rad/s 与 rad/s² |
+
+这些是实机小幅动作的起点，不是最终标定结果。建议先固定 MIT 参数，依次调 q1–q3 位置回路、腕部增益/滤波、速度/加速度和前视；只有 CSV 中 IK 目标已经平滑，而反馈仍振荡或明显滞后时，才回到 MIT 分轴调参修改 `Kp/Kd`。
 
 ## 位姿映射与运动限制
 
@@ -44,13 +76,13 @@ rebot-vr-teleoperate --motor-control-mode mit --control-config config/mit.yaml
 
 | 参数 | POS_VEL 默认 | MIT 默认 | 含义 |
 |---|---|---|---|
-| `--ik-mode` | pose | pose | pose：六轴位姿任务；position：仅 q1–q3 解位置，锁定腕部 |
+| `--ik-mode` | pose | pose | pose：TCP 位姿；position：q1–q3 解 TCP 位置并锁腕；split：q1–q3 解 joint4 位置，q4–q6 解相对腕姿 |
 | `--qp-solver` | scipy | scipy | scipy 或 osqp；OSQP 需安装 `.[qp]` |
 | `--qp-position-cost` | 20 | 20 | 位置任务权重 |
-| `--qp-orientation-cost` | 2 | 2 | 正常区域姿态任务权重 |
-| `--qp-orientation-cost-min` | 0.05 | 0.05 | 奇异区域姿态权重下限 |
+| `--qp-orientation-cost` | 2 | 2 | pose 正常区域姿态任务权重；split 不使用 |
+| `--qp-orientation-cost-min` | 0.05 | 0.05 | pose 奇异区域姿态权重下限；split 不使用 |
 | `--qp-position-gain` | 10 | 4 | 位置误差到目标线速度的增益，1/s |
-| `--qp-orientation-gain` | 8 | 2 | 姿态误差到目标角速度的增益，1/s |
+| `--qp-orientation-gain` | 8 | 2 | pose：姿态误差增益；split：q4–q6 腕部目标误差增益，1/s |
 | `--qp-damping` | 0.001 | 0.001 | 最小阻尼；别名 `--qp-damping-min` |
 | `--qp-damping-max` | 0.1 | 0.1 | 最大阻尼 |
 | `--qp-smoothness-cost` | 0.05 | 0.05 | 相邻 QP 速度差的代价 |
@@ -61,7 +93,7 @@ rebot-vr-teleoperate --motor-control-mode mit --control-config config/mit.yaml
 | `--joint-limit-margin-deg` | 2 | 2 | 关节限位内缩余量，deg |
 | `--qp-max-solve-time-ms` | 8 | 8 | 求解时间预算，ms；超时结果不采用 |
 
-要求 `0 ≤ critical < threshold`、`0 ≤ damping_min ≤ damping_max`。SciPy 返回后检查耗时，超时丢弃。
+要求 `0 ≤ critical < threshold`、`0 ≤ damping_min ≤ damping_max`。SciPy 返回后检查耗时，超时丢弃。split 的 q1–q3 位置 QP 仍使用位置代价、位置增益、阻尼、平滑、关节姿态正则、奇异性阈值与限位余量；q4–q6 闭式分解不使用两个姿态代价参数。当前为保持 CLI 兼容，腕部增益沿用 `qp_orientation_gain` 名称。
 
 ## MIT 参数
 

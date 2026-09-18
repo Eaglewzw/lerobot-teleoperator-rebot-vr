@@ -64,16 +64,22 @@ B601Kinematics(urdf_path=None, end_effector_frame="gripper_end")
   forward_kinematics(q_rad) -> (position, rotation)
   tcp_jacobian(q_rad) -> (6, 6)
   tcp_pose_error(q_rad, target_position, target_rotation) -> (6,)
+  wrist_anchor_pose(q_rad) -> (position, rotation)
+  wrist_anchor_jacobian(q_rad) -> (6, 6)
+  wrist_relative_rotation(q_rad) -> (3, 3)
   close()
 
 FullBodyQPIKSolver.solve(
   *, target_position, target_rotation, q_actual, dq_previous,
   dt, q_nominal, max_joint_speed, max_joint_acceleration,
-  target_linear_velocity_m_s=None, target_angular_velocity_rad_s=None
+  target_linear_velocity_m_s=None, target_angular_velocity_rad_s=None,
+  q_seed=None
 ) -> QPSolveResult
+
+SplitIKSolver.solve(...) -> QPSolveResult
 ```
 
-Pinocchio data 为线程局部对象；Jacobian 使用 LOCAL_WORLD_ALIGNED。QPSolveResult 含 q_next、dq、成功/原因、误差、耗时及奇异性诊断。
+Pinocchio data 为线程局部对象；Jacobian 使用 LOCAL_WORLD_ALIGNED。QPSolveResult 含 q_next、dq、成功/原因、误差、耗时、腕部裁剪量及奇异性诊断。
 
 | 组件 | 调用 |
 |---|---|

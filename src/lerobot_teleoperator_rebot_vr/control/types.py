@@ -151,8 +151,8 @@ class CartesianControlConfig:
             optional_positive <= 0.0
         ):
             raise ValueError("wrist and gripper control limits must be finite and positive")
-        if self.ik_mode not in ("pose", "position"):
-            raise ValueError("ik_mode must be pose or position")
+        if self.ik_mode not in ("pose", "position", "split"):
+            raise ValueError("ik_mode must be pose, position, or split")
         if (
             self.qp_orientation_cost > 0
             and self.qp_orientation_cost_min > self.qp_orientation_cost
@@ -210,6 +210,7 @@ class CartesianControlStatus:
     command_deg: np.ndarray
     orientation_error_deg: float | None
     ik_mode: str = "pose"
+    wrist_clip_deg: float | None = None
     sigma_min: float | None = None
     condition_number: float | None = None
     current_damping: float | None = None

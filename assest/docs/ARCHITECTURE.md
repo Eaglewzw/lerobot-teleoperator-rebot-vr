@@ -7,8 +7,8 @@
 ```text
 PICO / XRoboToolkit
   → TCP 解包 → 最新 Tracking 样本
-  → Grip 相对位姿映射 → TCP 目标
-  → Pinocchio FK/Jacobian → 异步 QP
+  → Grip 相对位姿映射 → TCP / joint4 目标
+  → Pinocchio FK/Jacobian → 异步 QP / 分离式 IK
   → 结果校验 → 前视位置与限位
   → POS_VEL follower / MIT 分发器 → 六轴电机
 Trigger → 夹爪整形 → 第七个电机
@@ -26,7 +26,8 @@ TCP 默认监听 `0.0.0.0:63901`，主循环默认 90 Hz。
 | `config_rebot_vr.py`、`rebot_vr.py` | LeRobot 配置注册、反馈与 action 接口 |
 | `constants.py` | 关节名称、软件限位、前馈力矩上限 |
 | `vr/` | TCP 协议、Tracking 解析、坐标转换、Grip 映射 |
-| `ik/kinematics.py` | FK、Jacobian、QP 求解 |
+| `ik/kinematics.py` | FK、TCP/joint4 Jacobian、全身 QP |
+| `ik/split_solver.py` | q1–q3 位置 QP、URDF 推导的 q4–q6 闭式分解 |
 | `ik/async_worker.py`、`coordination.py` | 异步请求、样本去重、结果隔离 |
 | `control/` | 状态机、命令整形、夹爪、MIT 与重力补偿 |
 | `runtime/real.py`、`cli.py` | 真机主循环、配置加载、参数检查 |
@@ -37,7 +38,9 @@ TCP 默认监听 `0.0.0.0:63901`，主循环默认 90 Hz。
 | `tools/` | VR 打印、夹爪测试等工具 |
 | `urdf/` | 运动学与动力学模型 |
 
-`config/pos_vel.yaml` 和 `config/mit.yaml` 提供真机默认参数，CLI 显式值优先。旧模块别名和三个顶层转发文件保留兼容；新代码使用领域目录。
+`config/pos_vel.yaml` 和 `config/mit.yaml` 提供保持 pose 行为的兼容默认参数；
+`config/{pos_vel,mit}_{pose,split}.yaml` 提供显式的“电机控制 × IK”完整 profile。
+CLI 显式值优先。旧模块别名和三个顶层转发文件保留兼容；新代码使用领域目录。
 
 ## 入口
 
@@ -58,10 +61,10 @@ LeRobot 插件 `RebotVRTeleop` 每周期要求先 `send_feedback()`，再 `get_a
 |---|---|---|
 | 主线程 | 反馈、映射、结果消费、下发、状态打印 | 同步机器人 I/O |
 | VR 线程 | TCP 接收与解析 | 加锁的 latest-only 样本槽 |
-| QP 线程 | 求解 | Condition 保护的请求/结果槽 |
+| IK 线程 | QP 或 split 求解 | Condition 保护的请求/结果槽 |
 | CSV 线程 | 写盘、汇总 | Queue |
 
-VR 和 QP 数组复制后设为只读。worker 可覆盖待处理请求；正式控制器同一时刻只允许一个未消费请求。结果须匹配 generation、sequence、sample_id，并通过成功、有限性和求解时间检查。
+VR 和 IK 数组复制后设为只读。worker 可覆盖待处理请求；正式控制器同一时刻只允许一个未消费请求。结果须匹配 generation、sequence、sample_id，并通过成功、有限性和求解时间检查。
 
 ## 主循环顺序
 

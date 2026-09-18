@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 
 class RebotVRTeleop(Teleoperator):
-    """Registered feedback-synchronized full-body QP controller.
+    """Registered feedback-synchronized QP/split IK controller.
 
     LeRobot 0.6's generic B601 loops do not call ``send_feedback``. In those
     loops ``get_action`` fails closed instead of falling back to open-loop joint

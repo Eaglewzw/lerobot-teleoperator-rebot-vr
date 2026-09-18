@@ -22,7 +22,7 @@ TCP 为 URDF 的 `gripper_end`，包含夹爪安装偏置。
 
 Tracking pose 为 `[x,y,z,qx,qy,qz,qw]`。默认坐标方向：XR +X → 基座 -Y，+Y → +Z，+Z → -X。
 
-Grip 激活时锁存 VR 与实际 TCP 位姿。忽略滤波、死区时：
+Grip 激活时锁存 VR 与实际任务点位姿。pose/position 的任务点是 TCP；split 的位置任务点是 joint4 轴心，姿态参考仍取 TCP。忽略滤波、死区时：
 
 ```text
 p_target = p_tcp_ref + position_scale * R * (p_vr - p_vr_ref)
@@ -52,7 +52,10 @@ R_target = Exp(orientation_scale * Log(Delta_R)) * R_tcp_ref
 |---|---|
 | pose | 六轴一起跟踪 TCP 位置、姿态 |
 | position | q1–q3 跟踪位置；q4–q6 保持激活时目标 |
+| split | q1–q3 跟踪 joint4 轴心位置；q4–q6 跟随相对腕姿 |
 | pose + orientation_scale=0 | 保持激活时 TCP 姿态，仍包含姿态任务 |
+
+split 从 URDF FK 推导腕部轴序和符号，不硬编码欧拉轴交换。每个 VR 样本先完成 q1–q3 位置 QP 和 q4–q6 闭式分解，再原子发布六轴结果；腕部超限会裁剪并报告 `wrist_clip_deg`。该模式允许 TCP 随腕部长度产生位置圆弧，也允许肩部转动带动末端朝向。
 
 ACTIVE 不重复执行通用位置整形。POS_VEL 由接受的 QP 速度生成前视位置；MIT 先限制最终速度变化、复核限位制动，再重建活动轴位置：
 

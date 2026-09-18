@@ -1,12 +1,12 @@
 # reBot VR Teleoperation
 
-基于 PICO 4、LeRobot 和闭环 QP IK 的 reBot B601-DM 六轴机械臂实机遥操作插件，支持夹爪控制、奇异位形自适应和运行诊断。
+基于 PICO 4、LeRobot 和闭环 IK 的 reBot B601-DM 六轴机械臂实机遥操作插件，支持全身 QP、分离式 IK、夹爪控制和运行诊断。
 
 <div align="center">
 
 [![LeRobot](https://img.shields.io/badge/LeRobot-0.6.x-FFD21E?logo=huggingface&logoColor=white)](https://github.com/huggingface/lerobot)
 ![PICO 4](https://img.shields.io/badge/PICO-4-1675D1.svg)
-![QP IK](https://img.shields.io/badge/IK-6--DoF_QP-orange.svg)
+![IK](https://img.shields.io/badge/IK-QP_%2B_Split-orange.svg)
 [![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/License-Apache--2.0-3377FF)](LICENSE)
 
@@ -15,6 +15,7 @@
 ## 功能
 
 - **6-DoF QP IK**：支持完整位姿或纯位置跟踪，并根据奇异程度调整姿态权重和阻尼。
+- **分离式 IK**：q1–q3 跟踪 joint4 轴心位置，q4–q6 只跟随手柄相对旋转，减少肩部转动引起的腕部补偿。
 - **Grip 离合控制**：按住跟随，松开保持，重新激活时不会产生目标突跳。
 - **分层安全保护**：包含关节限位、速度与加速度约束、相对目标钳制和反馈异常保护。
 - **双控制模式**：默认使用 `POS_VEL`；MIT 模式提供 PD 控制和重力前馈，仍处于实验阶段。
@@ -161,6 +162,18 @@ rebot-vr-teleoperate \
 rebot-vr-teleoperate \
   --robot-port /dev/ttyACM0 \
   --motor-control-mode mit
+
+# POS_VEL + split：加载独立的分离式 IK profile
+rebot-vr-teleoperate \
+  --robot-port /dev/ttyACM0 \
+  --motor-control-mode pos_vel \
+  --control-config config/pos_vel_split.yaml
+
+# MIT + split：MIT 参数不变，使用独立的分离式 IK profile
+rebot-vr-teleoperate \
+  --robot-port /dev/ttyACM0 \
+  --motor-control-mode mit \
+  --control-config config/mit_split.yaml
 ```
 
 MIT 模式应先通过分轴调参验证增益和重力前馈，再进行 VR 遥操作。
@@ -187,7 +200,19 @@ MIT 模式应先通过分轴调参验证增益和重力前馈，再进行 VR 遥
 
 ## 配置
 
-程序根据 `--motor-control-mode` 加载对应 YAML，命令行显式参数的优先级更高：
+不指定 `--control-config` 时，程序根据 `--motor-control-mode` 加载兼容默认
+`pos_vel.yaml` 或 `mit.yaml`，两者都保持 `pose` IK。需要明确组合时使用以下完整
+profile，避免只切换 `ik_mode` 却继续沿用另一种解算方式的滤波、增益和运动限制：
+
+| 电机控制 | pose QP | split IK |
+| --- | --- | --- |
+| POS_VEL | `config/pos_vel_pose.yaml` | `config/pos_vel_split.yaml` |
+| MIT | `config/mit_pose.yaml` | `config/mit_split.yaml` |
+
+`*_pose.yaml` 与当前兼容默认等价。两个 `*_split.yaml` 是保守的实机调试起点，
+不是硬件极限或已经完成标定的最终参数。命令行显式参数的优先级仍高于 YAML。
+
+兼容默认（pose）参数对比如下：
 
 | 关键配置 | POS_VEL | MIT |
 | --- | ---: | ---: |
@@ -199,20 +224,21 @@ MIT 模式应先通过分轴调参验证增益和重力前馈，再进行 VR 遥
 | QP 位置 / 姿态增益 | 10 / 8 | 4 / 2 |
 | 控制状态 | 推荐 | 实验性 |
 
-两种模式默认均使用右手、`pose` IK、SciPy QP、90 Hz 主循环和 0.2 s 数据超时。实际值以当前 YAML 和 `rebot-vr-teleoperate --help` 为准。
+两种兼容默认均使用右手、`pose` IK、SciPy QP、90 Hz 主循环和 0.2 s 数据超时。实际值以所选 YAML 和 `rebot-vr-teleoperate --help` 为准。
 
-自定义配置建议从对应模式复制，文件内的 `motor_control_mode` 必须和命令行一致：
+自定义配置建议从对应的“电机控制 + IK”profile 复制，文件内的
+`motor_control_mode` 必须和命令行一致：
 
 ```bash
-cp config/pos_vel.yaml config/my_pos_vel.yaml
+cp config/mit_split.yaml config/my_mit_split.yaml
 
 rebot-vr-teleoperate \
-  --motor-control-mode pos_vel \
-  --control-config config/my_pos_vel.yaml \
+  --motor-control-mode mit \
+  --control-config config/my_mit_split.yaml \
   --robot-port /dev/ttyACM0
 ```
 
-`pose` 模式使用全部六轴跟踪 TCP 位姿；`position` 模式仅使用 q1–q3 跟踪位置，q4–q6 保持激活 Grip 时的反馈姿态。详细约束与 MIT 控制原理见[控制设计](assest/docs/CONTROL_DESIGN.md)。
+`pose` 使用六轴跟踪 TCP 位姿；`position` 仅用 q1–q3 跟踪 TCP 位置并锁定腕部；`split` 用 q1–q3 跟踪 joint4 轴心位置，q4–q6 跟随手柄相对旋转。CLI 仍允许 `--ik-mode split` 覆盖，但实机使用建议选择完整 split profile，不要只覆盖这一项。详细的参数归属、调参顺序与 MIT 控制原理见[运行参数](assest/docs/PARAMETERS.md)和[控制设计](assest/docs/CONTROL_DESIGN.md)。
 
 ### MIT 分轴调参
 

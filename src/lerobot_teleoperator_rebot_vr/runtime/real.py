@@ -193,7 +193,7 @@ def main() -> None:
                 dtype=np.float64,
             ),
             velocity_aligned_axes=np.array(
-                [True, True, True, *([args.ik_mode == "pose"] * 3)],
+                [True, True, True, *([args.ik_mode != "position"] * 3)],
                 dtype=bool,
             ),
             joint_limit_margin_rad=np.deg2rad(
