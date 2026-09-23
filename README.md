@@ -3,9 +3,13 @@
 基于 PICO 4 和 LeRobot 的 reBot B601-DM 单／双臂遥操，支持 pose QP、分离式 IK、MIT／POS_VEL 控制和夹爪控制。
 
 <p align="center">
-  <img src="assest/cut_30s.gif" width="640" alt="reBot VR 遥操作演示">
+  <table>
+    <tr>
+      <td align="center"><img src="assest/cut_30s.gif" width="400"></td>
+      <td align="center"><img src="assest/dual.gif" width="400"></td>
+    </tr>
+  </table>
 </p>
-
 ## 安全须知
 
 - 配置可使机械臂在启动后自动移动，即使未按下 Grip。运行前核对零位、关节方向和运动区域，先做低速验证。
