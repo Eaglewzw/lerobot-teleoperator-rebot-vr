@@ -10,7 +10,7 @@ from ..ik.async_worker import LatestOnlyQPIKWorker
 from ..ik.coordination import QPRequestCoordinator
 from ..ik.kinematics import FullBodyQPIKSolver
 from ..ik.split_solver import SplitIKSolver
-from ..vr.adapter import sample_is_fresh, trigger_value, vr_frame_from_raw_action
+from ..vr.adapter import sample_is_fresh, trigger_value
 from ..vr.models import VRFrame
 from ..vr.pose_mapping import RelativePoseMapper, TeleopState
 from ..vr.tracking import ControllerSample
@@ -44,10 +44,12 @@ class FullBodyQPIKController:
         xr_to_base_rotation: np.ndarray,
         config: CartesianControlConfig | None = None,
         ik_worker: IKWorker | None = None,
+        hand_side: str = "right",
     ) -> None:
         self.kinematics = kinematics
         self.config = config or CartesianControlConfig()
         self.mapper = RelativePoseMapper(
+            side=hand_side,
             xr_to_world=xr_to_base_rotation,
             position_scale=self.config.position_scale,
             orientation_scale=self.config.orientation_scale,

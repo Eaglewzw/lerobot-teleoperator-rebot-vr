@@ -251,7 +251,11 @@ def test_failed_or_interrupted_return_still_disconnects(runner, failure):
         return False
 
     runner.zero.side_effect = zero
-    real.main()
+    if failure == "exception":
+        with pytest.raises(RuntimeError, match="invalid zero feedback"):
+            real.main()
+    else:
+        real.main()
     assert runner.events.index("zero") < runner.events.index("disconnect")
 
 
@@ -338,8 +342,57 @@ def test_partial_connection_failure_is_cleaned_without_homing(runner, monkeypatc
     assert runner.events.index("close_bus") < runner.events.index("disconnect")
 
 
-@pytest.mark.parametrize("option", ["--exit-zero-speed-rad-s", "--exit-zero-acceleration-rad-s2"])
+@pytest.mark.parametrize("option", ["--exit-zero-speed-rad-s", "--exit-zero-acceleration-rad-s2", "--exit-zero-tolerance-deg"])
 @pytest.mark.parametrize("value", ["0", "-1", "nan"])
 def test_exit_motion_limits_must_be_finite_and_positive(option, value):
     with pytest.raises(ValueError):
         validate_args(build_parser().parse_args([option, value]))
+
+
+def test_zero_67_degree_residual_is_recorded_and_not_hidden_by_startup_tolerance(zero_setup, tmp_path):
+    import csv
+    from lerobot_teleoperator_rebot_vr.diagnostics.logger import CSVLogger
+
+    args, _ = zero_setup
+    args.initial_move_tolerance_deg = 10.0
+    args.exit_zero_tolerance_deg = 3.0
+    robot = FollowingRobot(follow=False)
+    robot.q_deg = np.array([0., 0., -6.7, 0., 0., 0.])
+    rows = []
+    with pytest.raises(RuntimeError, match="not following"):
+        safety.move_to_zero_pose(
+            robot, lower_limit_rad=np.full(6, -3.), upper_limit_rad=np.full(6, 3.),
+            args=args, should_stop=lambda: False, write_row=rows.append, arm_id="right",
+        )
+    assert rows[0]["motion_result"] == "started"
+    assert rows[-1]["motion_result"] == "failed"
+    assert rows[-2]["row_kind"] == "sample"
+    last = rows[-1]
+    assert last["phase"] == "exit_zero" and last["arm_id"] == "right"
+    assert last["motion_tolerance_deg"] == 3.0
+    assert last["actual_elbow_flex_deg"] == pytest.approx(-6.7)
+    assert last["sent_elbow_flex_deg"] == pytest.approx(0.)
+    assert last["error_elbow_flex_deg"] == pytest.approx(6.7)
+    assert last["feedback_freshness"] == "unknown_no_receive_timestamp"
+    assert args.initial_move_tolerance_deg == 10.0
+    log = CSVLogger(tmp_path / "motion.csv")
+    for row in rows:
+        log.write_row(row)
+    log.close()
+    with log.output_path.open() as stream:
+        written = list(csv.DictReader(stream))
+    assert written[-1]["motion_result"] == "failed"
+
+
+def test_startup_records_completion_and_interruption(zero_setup):
+    args, _ = zero_setup
+    for stop in (False, True):
+        rows = []
+        reached = safety.move_to_initial_pose(
+            FollowingRobot(), target_rad=np.zeros(6), lower_limit_rad=np.full(6, -3.),
+            upper_limit_rad=np.full(6, 3.), args=args, should_stop=lambda: stop,
+            write_row=rows.append, arm_id="left",
+        )
+        assert reached is not stop
+        assert rows[-1]["phase"] == "startup"
+        assert rows[-1]["motion_result"] == ("interrupted" if stop else "completed")

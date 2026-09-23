@@ -6,24 +6,24 @@ import numpy as np
 import pytest
 from scipy.spatial.transform import Rotation
 
-from lerobot_teleoperator_rebot_vr.async_ik import (
+from lerobot_teleoperator_rebot_vr.ik.async_worker import (
     IKRequest,
     IKResult,
     LatestOnlyQPIKWorker,
 )
-from lerobot_teleoperator_rebot_vr.cartesian_controller import (
+from lerobot_teleoperator_rebot_vr.control.controller import (
     ARM_JOINT_NAMES,
     CartesianControlConfig,
     FullBodyQPIKController,
 )
-from lerobot_teleoperator_rebot_vr.joint_command import shape_joint_position_command
-from lerobot_teleoperator_rebot_vr.pose_mapping import (
+from lerobot_teleoperator_rebot_vr.control.joint_command import shape_joint_position_command
+from lerobot_teleoperator_rebot_vr.vr.pose_mapping import (
     DEFAULT_XR_TO_WORLD,
     RelativePoseMapper,
     TeleopState,
 )
-from lerobot_teleoperator_rebot_vr.processor import VRFrame
-from lerobot_teleoperator_rebot_vr.tracking import ControllerSample
+from lerobot_teleoperator_rebot_vr.vr.models import VRFrame
+from lerobot_teleoperator_rebot_vr.vr.tracking import ControllerSample
 
 
 def _sample(

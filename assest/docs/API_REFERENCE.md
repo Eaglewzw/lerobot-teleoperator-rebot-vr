@@ -164,7 +164,7 @@ decimate_minmax(x, y, max_points) -> (x_reduced, y_reduced)
 
 仅记录主循环，不含启动/退出回零。command 是控制器位置，可能与 MIT 最终下发值不同；没有 MPJPE、完整 TCP 位姿或电机接收确认。不同样本集合的分位数不能直接相加作总延迟。
 
-当前提供分析 API，无 CSV 图形命令。MIT 调参使用独立日志，见 [调参文档](MIT_TUNING.md)。
+当前提供分析 API，无 CSV 图形命令。
 
 ## 最小集成示例
 

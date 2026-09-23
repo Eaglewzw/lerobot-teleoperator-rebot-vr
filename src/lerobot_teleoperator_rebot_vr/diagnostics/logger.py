@@ -13,6 +13,7 @@ from typing import TextIO
 import numpy as np
 
 from ..constants import JOINT_NAMES
+from .motion import MOTION_FIELDNAMES
 from ..control.types import (
     ARM_JOINT_NAMES,
     CartesianControlStatus,
@@ -98,6 +99,7 @@ CSV_FIELDNAMES = (
     "dq_norm_rad_s",
     *MIT_FIELDNAMES,
     *LATENCY_FIELDNAMES,
+    *MOTION_FIELDNAMES,
 )
 
 _STOP = object()
@@ -172,6 +174,8 @@ def build_csv_row(status: CartesianControlStatus) -> dict[str, object]:
             )
     for field_name in LATENCY_FIELDNAMES:
         row[field_name] = _optional_float(getattr(status, field_name))
+    row.update(dict.fromkeys(MOTION_FIELDNAMES, ""))
+    row.update(phase="teleop", row_kind="sample")
     return row
 
 

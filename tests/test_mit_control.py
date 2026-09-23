@@ -84,6 +84,39 @@ def test_packaged_dynamics_model_has_six_joints_and_finite_gravity() -> None:
     )
 
 
+def test_feedback_hold_freezes_last_sent_command_without_using_invalid_feedback():
+    from lerobot_teleoperator_rebot_vr.runtime.safety import send_feedback_hold_action
+    robot = _FakeRobot()
+    dispatcher = _dispatcher(robot)
+    dispatcher.get_observation()
+    dispatcher.set_arm_velocity(np.full(6, 0.25))
+    action = {f"{name}.pos": 1.0 for name in (*ARM_JOINT_NAMES, GRIPPER_NAME)}
+    sent = dispatcher.send_action(action)
+    before = {name: motor.mit_calls[-1] for name, motor in robot.motors.items()
+              if name in ARM_JOINT_NAMES}
+    dispatcher.set_observation({"shoulder_pan.pos": float("nan")})
+    # Even a different controller-side fallback cannot advance the held goal.
+    fallback = {key: value + 5 for key, value in sent.items()}
+    assert send_feedback_hold_action(dispatcher, fallback) == sent
+    assert dispatcher.desired_velocity_rad_s == pytest.approx(np.zeros(6))
+    for name in ARM_JOINT_NAMES:
+        position, velocity, kp, kd, torque = robot.motors[name].mit_calls[-1]
+        assert velocity == 0
+        assert (position, kp, kd, torque) == pytest.approx(
+            (before[name][0], *before[name][2:]))
+    # HOLD does not turn cached positions into apparently valid feedback.
+    with pytest.raises(RuntimeError, match="finite feedback"):
+        dispatcher.send_action(action)
+
+
+def test_feedback_hold_without_a_previous_command_sends_nothing():
+    robot = _FakeRobot()
+    dispatcher = _dispatcher(robot)
+    with pytest.raises(RuntimeError, match="previously sent"):
+        dispatcher.send_feedback_hold()
+    assert all(not motor.mit_calls for motor in robot.motors.values())
+
+
 def test_dynamics_model_matches_production_tcp_kinematics() -> None:
     pin = pytest.importorskip("pinocchio")
     kinematics = B601Kinematics()

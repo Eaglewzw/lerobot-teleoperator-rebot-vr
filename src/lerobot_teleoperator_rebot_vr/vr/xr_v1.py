@@ -367,7 +367,7 @@ class V1TrackingSource:
         self._thread = None
         with self._lock:
             self._connected = False
-        self._buffer.clear()
+        self._clear_samples()
 
     @property
     def running(self) -> bool:
@@ -385,6 +385,18 @@ class V1TrackingSource:
 
     def latest(self) -> tuple[ControllerSample | None, int]:
         return self._buffer.latest()
+
+    def _clear_samples(self) -> None:
+        self._buffer.clear()
+
+    def _parse_samples(self, tracking, received_ns, epoch):
+        return [parse_controller_sample(
+            tracking, self.side, received_monotonic_ns=received_ns,
+            stream_epoch=epoch,
+        )]
+
+    def _publish_samples(self, samples):
+        self._buffer.publish(samples[0])
 
     def stats(self) -> TrackingSourceStats:
         with self._lock:
@@ -426,7 +438,7 @@ class V1TrackingSource:
 
     def _on_connect(self, address: tuple[str, int]) -> None:
         self._decoder.reset()
-        self._buffer.clear()
+        self._clear_samples()
         with self._lock:
             self._connected = True
             self._stream_epoch += 1
@@ -434,7 +446,7 @@ class V1TrackingSource:
         self._on_status(f"headset connected: {address[0]}:{address[1]}")
 
     def _on_disconnect(self) -> None:
-        self._buffer.clear()
+        self._clear_samples()
         with self._lock:
             was_connected = self._connected
             self._connected = False
@@ -463,12 +475,7 @@ class V1TrackingSource:
         with self._lock:
             epoch = self._stream_epoch
         try:
-            sample = parse_controller_sample(
-                tracking,
-                self.side,
-                received_monotonic_ns=received_ns,
-                stream_epoch=epoch,
-            )
+            samples = self._parse_samples(tracking, received_ns, epoch)
         except TrackingSampleError as exc:
             with self._lock:
                 self._invalid_frame_count += 1
@@ -477,7 +484,7 @@ class V1TrackingSource:
 
         clock_restarted = False
         with self._lock:
-            timestamp_ns = sample.tracking_timestamp_ns
+            timestamp_ns = samples[0].tracking_timestamp_ns
             if (
                 timestamp_ns > 0
                 and self._last_tracking_timestamp_ns > 0
@@ -491,20 +498,74 @@ class V1TrackingSource:
             self._tracking_frame_count += 1
 
         if clock_restarted:
-            self._buffer.clear()
-            sample = replace(sample, stream_epoch=epoch)
+            self._clear_samples()
             self._on_status("Tracking clock restarted; release Grip before rearming")
-        sample = replace(sample, published_monotonic_ns=time.monotonic_ns())
-        self._buffer.publish(sample)
+        published_ns = time.monotonic_ns()
+        samples = [replace(sample, stream_epoch=epoch,
+                           published_monotonic_ns=published_ns) for sample in samples]
+        self._publish_samples(samples)
         if self._on_sample is not None:
             try:
-                self._on_sample(sample, tracking)
+                self._on_sample(samples[0], tracking)
             except Exception as exc:
                 with self._lock:
                     self._last_error = f"sample callback failed: {exc}"
 
 
+@dataclass(frozen=True)
+class BimanualSample:
+    """One atomic packet snapshot; absent/invalid hands are never carried forward."""
+
+    left: ControllerSample | None = None
+    right: ControllerSample | None = None
+
+
+class BimanualTrackingSource(V1TrackingSource):
+    """Decode both hands once, using the existing TCP lifecycle and epoch rules."""
+
+    def __init__(self, host="0.0.0.0", port=63901, *, on_status=None):
+        self._pair_lock = threading.Lock()
+        self._pair = BimanualSample()
+        super().__init__(host, port, on_status=on_status)
+
+    def latest_pair(self) -> BimanualSample:
+        with self._pair_lock:
+            return self._pair
+
+    def _clear_samples(self):
+        super()._clear_samples()
+        with self._pair_lock:
+            self._pair = BimanualSample()
+
+    def _parse_samples(self, tracking, received_ns, epoch):
+        samples = []
+        errors = []
+        for side in ("left", "right"):
+            try:
+                samples.append(parse_controller_sample(
+                    tracking, side, received_monotonic_ns=received_ns,
+                    stream_epoch=epoch,
+                ))
+            except TrackingSampleError as exc:
+                errors.append(str(exc))
+        if not samples:
+            self._clear_samples()
+            raise TrackingSampleError("both hands are missing or invalid")
+        if errors:
+            with self._lock:
+                self._last_error = "; ".join(errors)
+                self._invalid_frame_count += 1
+        return samples
+
+    def _publish_samples(self, samples):
+        by_side = {sample.side: sample for sample in samples}
+        with self._pair_lock:
+            self._pair = BimanualSample(by_side.get("left"), by_side.get("right"))
+
+
 __all__ = [
+    "BimanualSample",
+    "BimanualTrackingSource",
     "CMD_FUNCTION",
     "MAX_BODY_SIZE",
     "PACKET_END",

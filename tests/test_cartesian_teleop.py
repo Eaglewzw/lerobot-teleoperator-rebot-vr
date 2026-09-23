@@ -8,36 +8,38 @@ import numpy as np
 import pytest
 from scipy.spatial.transform import Rotation
 
-import lerobot_teleoperator_rebot_vr.cartesian_controller as cartesian_controller_module
-from lerobot_teleoperator_rebot_vr.async_ik import IKRequest, IKResult, LatestOnlyQPIKWorker
-from lerobot_teleoperator_rebot_vr.cartesian_controller import (
+import lerobot_teleoperator_rebot_vr.control.controller as cartesian_controller_module
+from lerobot_teleoperator_rebot_vr.ik.async_worker import IKRequest, IKResult, LatestOnlyQPIKWorker
+from lerobot_teleoperator_rebot_vr.control.controller import (
     ARM_JOINT_NAMES,
     CartesianControlConfig,
     FullBodyQPIKController,
 )
 from lerobot_teleoperator_rebot_vr.config_rebot_vr import DEFAULT_BASE_T_ANCHOR
-from lerobot_teleoperator_rebot_vr.joint_command import (
+from lerobot_teleoperator_rebot_vr.control.joint_command import (
     bound_position_command_to_feedback,
 )
-from lerobot_teleoperator_rebot_vr.pose_mapping import (
+from lerobot_teleoperator_rebot_vr.vr.pose_mapping import (
     PoseTarget,
     RelativePoseMapper,
     TeleopState,
 )
-from lerobot_teleoperator_rebot_vr.processor import VRFrame
-from lerobot_teleoperator_rebot_vr.startup_pose import (
+from lerobot_teleoperator_rebot_vr.vr.models import VRFrame
+from lerobot_teleoperator_rebot_vr.control.startup import (
     StartupPoseMover,
     reference_initial_q_to_dm,
 )
-from lerobot_teleoperator_rebot_vr.teleoperate_real import (
-    _follower_pos_vel_velocity,
-    _follower_relative_target,
-    _feedback_hold_action,
-    _parser,
-    _send_feedback_hold_action,
-    _status_line,
-    _validate_args,
-    _move_to_initial_pose,
+from lerobot_teleoperator_rebot_vr.runtime.cli import (
+    follower_pos_vel_velocity as _follower_pos_vel_velocity,
+    follower_relative_target as _follower_relative_target,
+    build_parser as _parser,
+    status_line as _status_line,
+    validate_args as _validate_args,
+)
+from lerobot_teleoperator_rebot_vr.runtime.safety import (
+    feedback_hold_action as _feedback_hold_action,
+    send_feedback_hold_action as _send_feedback_hold_action,
+    move_to_initial_pose as _move_to_initial_pose,
 )
 
 
@@ -1298,7 +1300,7 @@ def test_tracking_loss_holds_actual_and_new_stream_requires_release() -> None:
 
 def test_packaged_dm_urdf_documents_physical_wrist_axis_signs() -> None:
     pytest.importorskip("pinocchio")
-    from lerobot_teleoperator_rebot_vr.kinematics import B601Kinematics
+    from lerobot_teleoperator_rebot_vr.ik.kinematics import B601Kinematics
 
     kinematics = B601Kinematics()
     try:
@@ -1325,7 +1327,7 @@ def test_packaged_dm_urdf_documents_physical_wrist_axis_signs() -> None:
 
 def test_packaged_dm_kinematics_uses_independent_pinocchio_data_per_thread() -> None:
     pytest.importorskip("pinocchio")
-    from lerobot_teleoperator_rebot_vr.kinematics import B601Kinematics
+    from lerobot_teleoperator_rebot_vr.ik.kinematics import B601Kinematics
 
     kinematics = B601Kinematics()
     main_data = kinematics._thread_data()

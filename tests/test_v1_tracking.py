@@ -6,12 +6,12 @@ import struct
 import numpy as np
 import pytest
 
-from lerobot_teleoperator_rebot_vr.tracking import (
+from lerobot_teleoperator_rebot_vr.vr.tracking import (
     LatestSampleBuffer,
     TrackingSampleError,
     parse_controller_sample,
 )
-from lerobot_teleoperator_rebot_vr.xr_v1 import (
+from lerobot_teleoperator_rebot_vr.vr.xr_v1 import (
     CMD_FUNCTION,
     PacketParser,
     PacketStreamDecoder,

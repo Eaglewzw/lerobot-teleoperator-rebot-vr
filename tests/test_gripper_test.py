@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from lerobot_teleoperator_rebot_vr.cartesian_controller import ARM_JOINT_NAMES
-from lerobot_teleoperator_rebot_vr.gripper_test import (
+from lerobot_teleoperator_rebot_vr.constants import ARM_JOINT_NAMES
+from lerobot_teleoperator_rebot_vr.tools.gripper_test import (
     build_parser,
     feedback_hold_action,
     run_gripper_test,

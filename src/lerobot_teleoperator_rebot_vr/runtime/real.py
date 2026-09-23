@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import signal
 import sys
 import time
@@ -15,8 +16,9 @@ from ..control.controller import (
 )
 from ..control.mit import MITCommandDispatcher
 from ..config_rebot_vr import DEFAULT_BASE_T_ANCHOR, RebotVRConfig
-from ..control.types import ARM_JOINT_NAMES, GRIPPER_NAME, CartesianControlConfig
+from ..control.types import ARM_JOINT_NAMES, CartesianControlConfig
 from ..diagnostics.logger import CSVLogger, build_csv_row
+from ..diagnostics.motion import cached_motor_row, mit_command_row
 from ..ik.kinematics import B601Kinematics
 from ..vr.controller import make_vr_controller
 from .cli import (
@@ -28,7 +30,6 @@ from .cli import (
 )
 from .safety import (
     PersistentFeedbackFault,
-    feedback_hold_action as _feedback_hold_action,
     move_to_initial_pose as _move_to_initial_pose,
     move_to_zero_pose as _move_to_zero_pose,
     send_feedback_hold_action as _send_feedback_hold_action,
@@ -44,6 +45,26 @@ logger = logging.getLogger(__name__)
 def main() -> None:
     args = _parser().parse_args()
     _validate_args(args)
+    ArmRuntime(args).run()
+
+
+class ArmRuntime:
+    """One arm's closed-loop runner; a dual session owns signals and VR input."""
+
+    def __init__(self, args, *, session=None, arm_id=None):
+        self.args = args
+        self.session = session
+        self.arm_id = arm_id
+
+    def run(self):
+        try:
+            _run_arm(self.args, session=self.session, arm_id=self.arm_id)
+        finally:
+            if self.session is not None:
+                self.session.arm_finished(self.arm_id)
+
+
+def _run_arm(args, *, session=None, arm_id=None) -> None:
     logging.basicConfig(
         level=getattr(logging, args.log_level),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -207,11 +228,15 @@ def main() -> None:
         )
     else:
         robot_io = robot
-    vr_controller = make_vr_controller(vr_config)
+    vr_controller = (
+        make_vr_controller(vr_config)
+        if session is None else session.hand_controller(arm_id)
+    )
     arm_controller = FullBodyQPIKController(
         kinematics,
         xr_to_base_rotation=np.asarray(DEFAULT_BASE_T_ANCHOR, dtype=np.float64)[:3, :3],
         config=control_config,
+        hand_side=args.hand,
     )
 
     stop = False
@@ -226,8 +251,9 @@ def main() -> None:
             stop_signal = _signal_number
         stop = True
 
-    signal.signal(signal.SIGINT, stop_now)
-    signal.signal(signal.SIGTERM, stop_now)
+    if session is None:
+        signal.signal(signal.SIGINT, stop_now)
+        signal.signal(signal.SIGTERM, stop_now)
 
     vr_connected = False
     robot_connected = False
@@ -274,6 +300,16 @@ def main() -> None:
             flush=True,
         )
     try:
+        if csv_logger is not None:
+            config_path = csv_logger.output_path.with_name(csv_logger.output_path.stem + "_config.json")
+            config_path.write_text(json.dumps(vars(args), indent=2, default=str) + "\n", encoding="utf-8")
+        if session is not None and session.should_stop():
+            return
+        if session is not None and not args.no_calibrate and not robot.is_calibrated:
+            raise RuntimeError(
+                f"{arm_id} ({args.robot_id}) has no calibration; run lerobot-calibrate "
+                "for this arm separately before dual teleoperation"
+            )
         vr_controller.connect()
         vr_connected = True
         robot_io.connect(calibrate=not args.no_calibrate)
@@ -289,19 +325,23 @@ def main() -> None:
                     lower_limit_rad=arm_controller.lower_limit_rad,
                     upper_limit_rad=arm_controller.upper_limit_rad,
                     args=args,
-                    should_stop=lambda: stop,
+                    should_stop=lambda: stop or (session is not None and session.should_stop()),
+                    write_row=None if csv_logger is None else csv_logger.write_row,
+                    arm_id=arm_id,
                 )
             if not reached:
                 return
         arm_controller.start()
         arm_started = True
+        if session is not None:
+            session.arm_ready(arm_id)
 
         started_s = time.monotonic()
         previous_loop_s = started_s
         next_status_s = started_s
         mit_velocity_max_age_s = max(3.0 / args.fps, 0.03)
         previous_command_send_finished_ns: int | None = None
-        while not stop:
+        while not stop and (session is None or not session.should_stop()):
             loop_started_ns = time.monotonic_ns()
             loop_started_s = time.monotonic()
             if args.duration and loop_started_s - started_s >= args.duration:
@@ -319,14 +359,24 @@ def main() -> None:
                 observation = {}
             feedback_finished_ns = time.monotonic_ns()
             feedback_read_ms = (feedback_finished_ns - feedback_started_ns) * 1e-6
+            feedback_row = cached_motor_row(robot_io) if csv_logger is not None else {}
             sample = vr_controller.latest_sample()
             frame = sample
             sample_pickup_ns = time.monotonic_ns()
             controller_started_ns = time.monotonic_ns()
             action, status = arm_controller.update(frame, observation, dt_s)
+            if session is not None:
+                session.report_feedback(arm_id, status.feedback_valid)
+                # Re-evaluate the shared gate after feedback validation.
+                if status.feedback_valid and frame is not None:
+                    current = vr_controller.latest_sample()
+                    if current is None or current.stream_epoch != frame.stream_epoch:
+                        frame = None
+                        action, status = arm_controller.update(None, observation, dt_s)
             feedback_fault_active = not status.feedback_valid
             controller_finished_ns = time.monotonic_ns()
-            if stop and not status.feedback_abort_requested:
+            stopping = stop or (session is not None and session.should_stop())
+            if stopping and not status.feedback_abort_requested:
                 break
             send_started_ns = time.monotonic_ns()
             if isinstance(robot_io, MITCommandDispatcher):
@@ -460,9 +510,25 @@ def main() -> None:
             if command_sent:
                 previous_command_send_finished_ns = send_finished_ns
             if csv_logger is not None:
-                csv_logger.write_row(build_csv_row(status))
+                row = build_csv_row(status)
+                row.update(feedback_row)
+                row["arm_id"] = arm_id or "single"
+                if sent_action is not None:
+                    sent_deg = np.array([sent_action[f"{name}.pos"] for name in ARM_JOINT_NAMES])
+                    row.update(mit_command_row(robot_io, status.actual_deg[:6], sent_deg, feedback_row))
+                    for i, name in enumerate(ARM_JOINT_NAMES):
+                        row[f"sent_{name}_deg"] = float(sent_deg[i])
+                csv_logger.write_row(row)
 
             if status.feedback_abort_requested:
+                if session is not None:
+                    preserve_torque_for_feedback_fault = True
+                    session.latch_fault(arm_id, status.feedback_fault_reason)
+                    # Keep both loops in HOLD until the operator exits.
+                    sleep_s = 1.0 / args.fps - (time.monotonic() - loop_started_s)
+                    if sleep_s > 0:
+                        time.sleep(sleep_s)
+                    continue
                 print(_status_line(status), flush=True)
                 preserve_torque_for_feedback_fault = True
                 _settle_persistent_feedback_fault(
@@ -479,11 +545,17 @@ def main() -> None:
                 )
 
             if loop_started_s >= next_status_s:
-                print(_status_line(status), flush=True)
+                prefix = "" if arm_id is None else f"[{arm_id}] "
+                print(prefix + _status_line(status), flush=True)
                 next_status_s = loop_started_s + 1.0 / args.status_rate
             sleep_s = 1.0 / args.fps - (time.monotonic() - loop_started_s)
             if sleep_s > 0.0:
                 time.sleep(sleep_s)
+    except BaseException:
+        if session is not None:
+            # Notify the peer before potentially slow motor cleanup begins.
+            session.request_stop()
+        raise
     finally:
         try:
             try:
@@ -501,7 +573,10 @@ def main() -> None:
                                 # unwinding an error or when feedback is in HOLD.
                                 if (
                                     args.return_to_zero_on_exit
-                                    and stop_signal == signal.SIGINT
+                                    and (
+                                        stop_signal == signal.SIGINT if session is None
+                                        else session.return_to_zero_requested()
+                                    )
                                     and not abort_zero_return
                                     and robot_connected
                                     and not feedback_fault_active
@@ -516,12 +591,21 @@ def main() -> None:
                                             lower_limit_rad=arm_controller.lower_limit_rad,
                                             upper_limit_rad=arm_controller.upper_limit_rad,
                                             args=args,
-                                            should_stop=lambda: abort_zero_return,
+                                            should_stop=lambda: abort_zero_return or (
+                                                session is not None and session.zero_return_aborted()
+                                            ),
+                                            write_row=None if csv_logger is None else csv_logger.write_row,
+                                            arm_id=arm_id,
                                         )
                                         if not reached:
                                             logger.warning("Return to zero interrupted; proceeding to disconnect.")
                                     except Exception:
+                                        if session is not None:
+                                            session.request_stop()
                                         logger.exception("Return to zero failed; proceeding to disconnect.")
+                                        # The enclosing finally blocks still disconnect and drain
+                                        # logs. Propagate failure so the session cannot exit 0.
+                                        raise
                             finally:
                                 if preserve_torque_for_feedback_fault:
                                     print(

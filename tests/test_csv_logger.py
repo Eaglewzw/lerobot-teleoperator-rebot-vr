@@ -5,15 +5,15 @@ import csv
 import numpy as np
 import pytest
 
-from lerobot_teleoperator_rebot_vr.cartesian_controller import CartesianControlStatus
-from lerobot_teleoperator_rebot_vr.csv_logger import (
+from lerobot_teleoperator_rebot_vr.control.types import CartesianControlStatus
+from lerobot_teleoperator_rebot_vr.diagnostics.logger import (
     CSV_FIELDNAMES,
     CSVLogger,
     LATENCY_FIELDNAMES,
     build_csv_row,
 )
-from lerobot_teleoperator_rebot_vr.pose_mapping import TeleopState
-from lerobot_teleoperator_rebot_vr.teleop_cli import build_parser
+from lerobot_teleoperator_rebot_vr.vr.pose_mapping import TeleopState
+from lerobot_teleoperator_rebot_vr.runtime.cli import build_parser
 
 
 def _status() -> CartesianControlStatus:

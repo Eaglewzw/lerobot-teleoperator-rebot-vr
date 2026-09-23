@@ -34,13 +34,12 @@ TCP 默认监听 `0.0.0.0:63901`，主循环默认 90 Hz。
 | `runtime/safety.py`、`shutdown.py` | 启动、回零、故障保持、失能 |
 | `runtime/feedback_requests.py` | 启动阶段反馈请求限频 |
 | `diagnostics/` | CSV 记录、时延汇总、离线分析 API |
-| `mit_tuning/` | 独立 MIT 分轴调参 |
 | `tools/` | VR 打印、夹爪测试等工具 |
 | `urdf/` | 运动学与动力学模型 |
 
 `config/pos_vel.yaml` 和 `config/mit.yaml` 提供保持 pose 行为的兼容默认参数；
 `config/{pos_vel,mit}_{pose,split}.yaml` 提供显式的“电机控制 × IK”完整 profile。
-CLI 显式值优先。旧模块别名和三个顶层转发文件保留兼容；新代码使用领域目录。
+CLI 显式值优先。Python 导入统一使用 `control/`、`ik/`、`vr/`、`runtime/`、`diagnostics/` 和 `tools/` 下的实际模块；旧模块别名和顶层转发文件已移除。外部脚本需迁移旧导入路径，已安装的正式命令名称不变。
 
 ## 入口
 
@@ -49,7 +48,6 @@ CLI 显式值优先。旧模块别名和三个顶层转发文件保留兼容；�
 | `rebot-vr-teleoperate` | `runtime.real:main` | 真机遥操 |
 | `rebot-vr-print` | `tools.print_vr_data:main` | 检查 VR 数据 |
 | `rebot-gripper-test` | `tools.gripper_test:main` | 单独测试夹爪 |
-| `rebot-mit-tune` | `mit_tuning.cli:main` | MIT 分轴调参 |
 
 入口以 [pyproject.toml](../../pyproject.toml) 为准。当前没有 CSV 图形分析命令。
 

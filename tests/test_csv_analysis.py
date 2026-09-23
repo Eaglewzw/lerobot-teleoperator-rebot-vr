@@ -6,12 +6,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from lerobot_teleoperator_rebot_vr.csv_analysis import (
+from lerobot_teleoperator_rebot_vr.diagnostics.analysis import (
     SIGNAL_SPECS,
     TelemetryDataset,
     decimate_minmax,
 )
-from lerobot_teleoperator_rebot_vr.csv_logger import CSV_FIELDNAMES, JOINT_NAMES
+from lerobot_teleoperator_rebot_vr.diagnostics.logger import CSV_FIELDNAMES, JOINT_NAMES
 
 
 def _row(timestamp_ns: int | str, offset: float = 0.0) -> dict[str, object]:

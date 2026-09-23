@@ -142,6 +142,7 @@ class RebotVRTeleop(Teleoperator):
                     DEFAULT_BASE_T_ANCHOR, dtype=np.float64
                 )[:3, :3],
                 config=control_config,
+                hand_side=self.config.hand_side,
             )
 
         controller = self._controller or make_vr_controller(self.config)

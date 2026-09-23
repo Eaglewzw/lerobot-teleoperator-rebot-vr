@@ -131,6 +131,7 @@ class MITCommandDispatcher:
         self._first_command_s: float | None = None
         self.last_gravity_torque_nm = np.zeros(6, dtype=np.float64)
         self.last_feedforward_torque_nm = np.zeros(6, dtype=np.float64)
+        self._last_sent_goal_deg: dict[str, float] | None = None
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.robot, name)
@@ -259,15 +260,31 @@ class MITCommandDispatcher:
         self.last_gravity_torque_nm = gravity_torque
         self.last_feedforward_torque_nm = feedforward
 
+        return self._send_goal(goal_deg, self._desired_velocity_rad_s, feedforward)
+
+    def send_feedback_hold(self) -> dict[str, float]:
+        """Repeat the last bounded command at zero velocity without fresh feedback.
+
+        Freeze the last gravity feedforward rather than fabricating measured
+        positions or extrapolating motion through a feedback outage.
+        """
+        self.stop_arm_velocity(immediate=True)
+        if self._last_sent_goal_deg is None:
+            raise RuntimeError("MIT HOLD requires a previously sent valid command")
+        return self._send_goal(self._last_sent_goal_deg, np.zeros(6),
+                               self.last_feedforward_torque_nm)
+
+    def _send_goal(self, goal_deg, velocity, feedforward):
         for index, name in enumerate(ARM_JOINT_NAMES):
             self.robot.motors[name].send_mit(
                 math.radians(goal_deg[name]),
-                float(self._desired_velocity_rad_s[index]),
+                float(velocity[index]),
                 float(self.kp[index]),
                 float(self.kd[index]),
                 float(feedforward[index]),
             )
         self._send_gripper(goal_deg[GRIPPER_NAME])
+        self._last_sent_goal_deg = dict(goal_deg)
         return {f"{name}.pos": value for name, value in goal_deg.items()}
 
     def _advance_arm_velocity(self, now_s: float) -> None:

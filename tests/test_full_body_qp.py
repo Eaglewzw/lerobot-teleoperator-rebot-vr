@@ -5,15 +5,15 @@ import time
 import numpy as np
 import pytest
 
-from lerobot_teleoperator_rebot_vr.kinematics import B601Kinematics, FullBodyQPIKSolver
-from lerobot_teleoperator_rebot_vr.async_ik import IKRequest, LatestOnlyQPIKWorker
-from lerobot_teleoperator_rebot_vr.cartesian_controller import (
+from lerobot_teleoperator_rebot_vr.ik.kinematics import B601Kinematics, FullBodyQPIKSolver
+from lerobot_teleoperator_rebot_vr.ik.async_worker import IKRequest, LatestOnlyQPIKWorker
+from lerobot_teleoperator_rebot_vr.control.controller import (
     ARM_JOINT_NAMES,
     CartesianControlConfig,
     FullBodyQPIKController,
 )
 from lerobot_teleoperator_rebot_vr.config_rebot_vr import DEFAULT_BASE_T_ANCHOR
-from lerobot_teleoperator_rebot_vr.processor import VRFrame
+from lerobot_teleoperator_rebot_vr.vr.models import VRFrame
 
 
 @pytest.fixture()

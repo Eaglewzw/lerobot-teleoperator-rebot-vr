@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import numpy as np
-from lerobot_teleoperator_rebot_vr.kinematics import B601Kinematics, FullBodyQPIKSolver
+from lerobot_teleoperator_rebot_vr.ik.kinematics import B601Kinematics, FullBodyQPIKSolver
 
 
 def main() -> None:

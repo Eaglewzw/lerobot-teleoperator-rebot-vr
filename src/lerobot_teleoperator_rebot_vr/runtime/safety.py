@@ -11,7 +11,9 @@ import numpy as np
 
 from ..control.startup import StartupPoseMover
 from ..control.feedback import read_robot_feedback
+from ..control.mit import MITCommandDispatcher
 from ..control.types import ARM_JOINT_NAMES, GRIPPER_NAME
+from ..diagnostics.motion import MotionRecorder, cached_motor_row, mit_command_row
 
 logger = logging.getLogger(__name__)
 
@@ -21,19 +23,22 @@ class PersistentFeedbackFault(RuntimeError):
 
 
 def move_to_initial_pose(robot, *, target_rad: np.ndarray, lower_limit_rad: np.ndarray,
-                         upper_limit_rad: np.ndarray, args, should_stop: Callable[[], bool]) -> bool:
+                         upper_limit_rad: np.ndarray, args, should_stop: Callable[[], bool],
+                         write_row=None, arm_id=None) -> bool:
     return _move_to_joint_pose(
         robot, target_rad=target_rad, lower_limit_rad=lower_limit_rad,
         upper_limit_rad=upper_limit_rad, args=args, should_stop=should_stop, phase="initial",
+        write_row=write_row, arm_id=arm_id,
     )
 
 
 def move_to_zero_pose(robot, *, lower_limit_rad: np.ndarray, upper_limit_rad: np.ndarray,
-                      args, should_stop: Callable[[], bool]) -> bool:
+                      args, should_stop: Callable[[], bool], write_row=None, arm_id=None) -> bool:
     """Return six joints to calibrated zero, holding the gripper at entry position."""
     if np.any(np.asarray(lower_limit_rad) > 0) or np.any(np.asarray(upper_limit_rad) < 0):
         raise RuntimeError("zero pose is outside the configured joint limits")
     limits = copy(args)
+    limits.initial_move_tolerance_deg = args.exit_zero_tolerance_deg
     limits.max_joint_speed_rad_s = min(
         args.exit_zero_speed_rad_s, args.max_joint_speed_rad_s,
         args.wrist_speed_rad_s or args.max_joint_speed_rad_s,
@@ -57,6 +62,7 @@ def move_to_zero_pose(robot, *, lower_limit_rad: np.ndarray, upper_limit_rad: np
         return _move_to_joint_pose(
             robot, target_rad=np.zeros(6), lower_limit_rad=lower_limit_rad,
             upper_limit_rad=upper_limit_rad, args=limits, should_stop=should_stop, phase="zero",
+            write_row=write_row, arm_id=arm_id,
         )
     finally:
         if original_velocity is not None:
@@ -64,7 +70,27 @@ def move_to_zero_pose(robot, *, lower_limit_rad: np.ndarray, upper_limit_rad: np
 
 
 def _move_to_joint_pose(robot, *, target_rad: np.ndarray, lower_limit_rad: np.ndarray,
-                        upper_limit_rad: np.ndarray, args, should_stop: Callable[[], bool], phase: str) -> bool:
+                        upper_limit_rad: np.ndarray, args, should_stop: Callable[[], bool], phase: str,
+                        write_row=None, arm_id=None) -> bool:
+    recorder = MotionRecorder(write_row, arm_id=arm_id,
+                              phase="startup" if phase == "initial" else "exit_zero",
+                              tolerance_deg=args.initial_move_tolerance_deg)
+    recorder.event("started")
+    try:
+        reached = _execute_joint_pose(
+            robot, target_rad=target_rad, lower_limit_rad=lower_limit_rad,
+            upper_limit_rad=upper_limit_rad, args=args, should_stop=should_stop,
+            phase=phase, recorder=recorder, arm_id=arm_id,
+        )
+    except BaseException as exc:
+        recorder.event("failed", str(exc))
+        raise
+    recorder.event("completed" if reached else "interrupted")
+    return reached
+
+
+def _execute_joint_pose(robot, *, target_rad, lower_limit_rad, upper_limit_rad,
+                        args, should_stop, phase, recorder, arm_id):
     mover = StartupPoseMover(
         target_rad, lower_limit_rad=lower_limit_rad, upper_limit_rad=upper_limit_rad,
         max_speed_rad_s=args.max_joint_speed_rad_s,
@@ -77,14 +103,20 @@ def _move_to_joint_pose(robot, *, target_rad: np.ndarray, lower_limit_rad: np.nd
     next_status_s = started_s
     last_progress_s = started_s
     best_error_rad = float("inf")
+    joint_best_error_rad = np.full(6, np.inf)
+    joint_last_progress_s = np.full(6, started_s)
     gripper_hold_deg = None
     progress_threshold_rad = min(np.deg2rad(0.5), args.max_joint_speed_rad_s * args.initial_stall_timeout * 0.25)
-    print(f"Moving to B601-DM {phase} pose (rad): " + np.array2string(target_rad, precision=3, suppress_small=True), flush=True)
+    prefix = "" if arm_id is None else f"[{arm_id}] "
+    print(prefix + f"Moving to B601-DM {phase} pose (rad): " + np.array2string(target_rad, precision=3, suppress_small=True), flush=True)
     while not should_stop():
         loop_started_s = time.monotonic()
         if loop_started_s - started_s >= args.initial_move_timeout:
             raise RuntimeError(f"{phase}-pose motion timed out; check motor feedback, calibration, and limits")
+        feedback_started_ns = time.monotonic_ns()
         observation = robot.get_observation()
+        feedback_finished_ns = time.monotonic_ns()
+        feedback_row = cached_motor_row(robot) if recorder.write_row is not None else {}
         actual_rad, gripper_actual_deg, feedback_error = read_robot_feedback(observation)
         if feedback_error:
             raise RuntimeError(f"{phase}-pose feedback is invalid: {feedback_error}")
@@ -98,8 +130,40 @@ def _move_to_joint_pose(robot, *, target_rad: np.ndarray, lower_limit_rad: np.nd
         # A stop received during feedback/FK must prevent another movement command.
         if should_stop():
             return False
+        send_started_ns = time.monotonic_ns()
         sent_action = robot.send_action(action)
+        send_finished_ns = time.monotonic_ns()
         sent_deg = np.array([float(sent_action[f"{name}.pos"]) for name in ARM_JOINT_NAMES])
+        errors = np.abs(target_rad - actual_rad)
+        improved = errors < joint_best_error_rad - progress_threshold_rad
+        joint_best_error_rad[improved] = errors[improved]
+        joint_last_progress_s[improved] = loop_started_s
+        if recorder.write_row is not None:
+            row = {
+                **feedback_row, **mit_command_row(robot, np.rad2deg(actual_rad), sent_deg, feedback_row),
+                "motion_max_error_deg": float(np.rad2deg(status.max_actual_error_rad)),
+                "feedback_started_monotonic_ns": feedback_started_ns,
+                "feedback_finished_monotonic_ns": feedback_finished_ns,
+                "command_send_started_monotonic_ns": send_started_ns,
+                "command_send_finished_monotonic_ns": send_finished_ns,
+                "feedback_read_ms": (feedback_finished_ns - feedback_started_ns) * 1e-6,
+                "send_action_ms": (send_finished_ns - send_started_ns) * 1e-6,
+                "actual_gripper_deg": gripper_actual_deg,
+                "target_gripper_deg": action[f"{GRIPPER_NAME}.pos"],
+                "command_gripper_deg": sent_action[f"{GRIPPER_NAME}.pos"],
+            }
+            for i, joint in enumerate(ARM_JOINT_NAMES):
+                row.update({
+                    f"actual_{joint}_deg": float(np.rad2deg(actual_rad[i])),
+                    f"target_{joint}_deg": float(np.rad2deg(target_rad[i])),
+                    f"command_{joint}_deg": float(command_deg[i]),
+                    f"sent_{joint}_deg": float(sent_deg[i]),
+                    f"error_{joint}_deg": float(np.rad2deg(target_rad[i] - actual_rad[i])),
+                    f"stalled_{joint}_s": float(loop_started_s - joint_last_progress_s[i]),
+                    f"command_clipped_{joint}_flag": bool(abs(sent_deg[i] - command_deg[i]) > 1e-6),
+                })
+            # Log the failing sample BEFORE the stall check raises.
+            recorder.sample(row)
         if status.max_actual_error_rad < best_error_rad - progress_threshold_rad:
             best_error_rad = status.max_actual_error_rad
             last_progress_s = loop_started_s
@@ -108,14 +172,14 @@ def _move_to_joint_pose(robot, *, target_rad: np.ndarray, lower_limit_rad: np.nd
                                f"actual_deg={np.array2string(np.rad2deg(actual_rad), precision=1)} "
                                f"command_deg={np.array2string(command_deg, precision=1)} sent_deg={np.array2string(sent_deg, precision=1)}")
         if loop_started_s >= next_status_s:
-            print(f"{phase}_move error={np.rad2deg(status.max_actual_error_rad):.1f}deg "
+            print(prefix + f"{phase}_move error={np.rad2deg(status.max_actual_error_rad):.1f}deg "
                   f"actual={np.array2string(np.rad2deg(actual_rad), precision=1)} "
                   f"command={np.array2string(command_deg, precision=1)} "
                   f"sent={np.array2string(sent_deg, precision=1)}", flush=True)
             next_status_s = loop_started_s + 1.0 / args.status_rate
         if status.done:
-            print("Initial pose reached; VR control is now enabled." if phase == "initial"
-                  else "Zero pose reached; disconnecting robot.", flush=True)
+            print(prefix + ("Initial pose reached; VR control is now enabled." if phase == "initial"
+                  else "Zero pose reached; disconnecting robot."), flush=True)
             return True
         sleep_s = 1.0 / args.fps - (time.monotonic() - loop_started_s)
         if sleep_s > 0.0:
@@ -143,6 +207,8 @@ def feedback_hold_action(observation: dict[str, float], fallback_action: dict[st
 
 
 def send_feedback_hold_action(robot, action: dict[str, float]) -> dict[str, float]:
+    if isinstance(robot, MITCommandDispatcher):
+        return robot.send_feedback_hold()
     config = getattr(robot, "config", None)
     if config is None or not hasattr(config, "max_relative_target"):
         return robot.send_action(action)

@@ -174,6 +174,8 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
                        help="joint speed cap for Ctrl+C return to zero; also obeys configured arm/wrist limits")
     robot.add_argument("--exit-zero-acceleration-rad-s2", type=float, default=1.0,
                        help="joint acceleration cap for Ctrl+C return to zero")
+    robot.add_argument("--exit-zero-tolerance-deg", type=float, default=2.0,
+                       help="zero-return tolerance, independent of startup tolerance")
     robot.add_argument("--no-calibrate", action="store_true")
     robot.add_argument("--disable-torque-on-disconnect", action=argparse.BooleanOptionalAction,
                        default=True, help="disable motors when exiting (support the arm before using the default)")
@@ -414,6 +416,7 @@ def validate_args(args: argparse.Namespace) -> None:
             "initial-stall-timeout": args.initial_stall_timeout,
             "exit-zero-speed-rad-s": args.exit_zero_speed_rad_s,
             "exit-zero-acceleration-rad-s2": args.exit_zero_acceleration_rad_s2,
+            "exit-zero-tolerance-deg": args.exit_zero_tolerance_deg,
             "fps": args.fps,
             "status-rate": args.status_rate,
         },
