@@ -50,7 +50,11 @@ class FullBodyQPIKSolver:
                  singularity_critical_threshold: float = 0.02,
                  singularity_characteristic_length_m: float = 0.3,
                  joint_lower_limit_rad: object | None = None,
-                 joint_upper_limit_rad: object | None = None) -> None:
+                 joint_upper_limit_rad: object | None = None,
+                 position_contour_weight: float = 1.0) -> None:
+        if not np.isfinite(position_contour_weight) or position_contour_weight < 1:
+            raise ValueError("position_contour_weight must be finite and >= 1")
+        self.position_contour_weight = float(position_contour_weight)
         self.kinematics = kinematics
         self.solver = str(solver).lower()
         if self.solver not in ("scipy", "osqp"):
@@ -211,12 +215,27 @@ class FullBodyQPIKSolver:
             sigma_min, condition_number = self._singularity_metrics(jac)
             damping, orientation_weight = self._adaptive_weights(sigma_min)
             wp = np.sqrt(self.position_cost)
-            task_matrices = [wp * jac[:3]]
+            task_velocity = linear_feedforward + self.position_gain * error[:3]
+            # Penalize transverse task-velocity error without locking any joint
+            # or world axis. At rest use the correction direction; the projector
+            # is sign-invariant across reversals. This is a soft, feasible cost.
+            weight = np.eye(3)
+            if self.position_contour_weight > 1:
+                def projector(vector, epsilon):
+                    squared = float(vector @ vector)
+                    return (squared*np.eye(3) - np.outer(vector, vector)) / (squared + epsilon**2)
+                # Blend smoothly through stops/direction changes; avoid a hard
+                # velocity threshold or a remembered axis after clutch reset.
+                ff_squared = float(linear_feedforward @ linear_feedforward)
+                blend = ff_squared / (ff_squared + .01**2)
+                transverse = (blend * projector(linear_feedforward, 1e-6)
+                              + (1-blend) * projector(task_velocity, .001))
+                weight += (np.sqrt(self.position_contour_weight) - 1) * transverse
+            task_matrices = [wp * weight @ jac[:3]]
             task_targets = [
                 wp
                 * (
-                    linear_feedforward
-                    + self.position_gain * error[:3]
+                    weight @ task_velocity
                 )
             ]
             if self.ik_mode == "pose" and orientation_weight > 0.0:

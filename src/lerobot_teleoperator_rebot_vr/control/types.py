@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 import numpy as np
@@ -50,12 +50,22 @@ class CartesianControlConfig:
     qp_damping_max: float = 0.1
     qp_smoothness_cost: float = 0.05
     qp_posture_cost: float = 0.01
+    qp_use_sent_velocity: bool = False
+    split_contour_weight: float = 1.0
+    split_reference_speed_m_s: float = 0.0
+    split_reference_acceleration_m_s2: float = 1.5
     singularity_threshold: float = 0.08
     singularity_critical_threshold: float = 0.02
     singularity_characteristic_length_m: float = 0.3
     joint_limit_margin_deg: float = 2.0
     qp_max_solve_time_ms: float = 8.0
     position_scale: float = 1.0
+    linear_ff_max_speed_m_s: float = 0.3
+    linear_ff_max_acceleration_m_s2: float = 1.0
+    linear_ff_max_deceleration_m_s2: float = 4.0
+    linear_ff_brake_confirm_s: float = 0.03
+    linear_ff_jump_speed_m_s: float = 1.0
+    linear_ff_jump_slack_m: float = 0.005
     orientation_scale: float = 1.0
     position_filter_hz: float = 0.0
     orientation_filter_hz: float = 0.0
@@ -105,6 +115,7 @@ class CartesianControlConfig:
                 self.qp_damping_max,
                 self.qp_smoothness_cost,
                 self.qp_posture_cost,
+                self.split_reference_speed_m_s,
                 self.singularity_threshold,
                 self.singularity_critical_threshold,
                 self.joint_limit_margin_deg,
@@ -116,6 +127,14 @@ class CartesianControlConfig:
             raise ValueError("mapping values and IK damping must be non-negative")
         positive = np.asarray(
             (
+                self.linear_ff_max_speed_m_s,
+                self.split_contour_weight,
+                self.split_reference_acceleration_m_s2,
+                self.linear_ff_max_acceleration_m_s2,
+                self.linear_ff_max_deceleration_m_s2,
+                self.linear_ff_brake_confirm_s,
+                self.linear_ff_jump_speed_m_s,
+                self.linear_ff_jump_slack_m,
                 self.stale_timeout_s,
                 self.max_joint_speed_rad_s,
                 self.max_joint_acceleration_rad_s2,
@@ -134,6 +153,8 @@ class CartesianControlConfig:
             raise ValueError("control rates and motion limits must be finite and positive")
         if self.qp_position_cost <= 0.0:
             raise ValueError("QP position cost must be finite and positive")
+        if self.split_contour_weight < 1:
+            raise ValueError("split_contour_weight must be at least 1")
         optional_positive = np.asarray(
             tuple(
                 value
@@ -224,6 +245,10 @@ class CartesianControlStatus:
     tcp_position_error_m: float | None = None
     tcp_actual_position_m: np.ndarray | None = None
     tcp_target_position_m: np.ndarray | None = None
+    controller_position_m: np.ndarray | None = None
+    controller_position_frame: str = ""
+    mapping_sample_id: int | None = None
+    velocity_diagnostics: dict[str, object] = field(default_factory=dict)
     tcp_actual_rotvec_rad: np.ndarray | None = None
     tcp_target_rotvec_rad: np.ndarray | None = None
     feedback_valid: bool = True

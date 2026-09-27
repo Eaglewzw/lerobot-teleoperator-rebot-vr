@@ -146,6 +146,11 @@ def test_mit_dispatcher_sends_six_axis_velocity_and_gravity_but_force_pos_grippe
     observation = dispatcher.get_observation()
     dispatcher.set_observation(observation)
     dispatcher.set_arm_velocity(np.array([4.0, -4.0, 0.5, 5.0, -5.0, 1.0]))
+    diagnostics = dispatcher.velocity_diagnostics
+    assert diagnostics["mit_input_velocity_shoulder_pan_rad_s"] == 4.0
+    assert diagnostics["mit_target_velocity_shoulder_pan_rad_s"] == 1.0
+    assert diagnostics["mit_speed_limited_shoulder_pan_flag"] == 1.0
+    assert diagnostics["mit_speed_limited_elbow_flex_flag"] == 0.0
     action = {f"{name}.pos": 0.0 for name in (*ARM_JOINT_NAMES, GRIPPER_NAME)}
 
     sent = dispatcher.send_action(action)
@@ -236,10 +241,15 @@ def test_mit_final_velocity_obeys_acceleration_limit(monkeypatch) -> None:
     assert dispatcher.desired_velocity_rad_s == pytest.approx(
         [0.04, 0.04, 0.04, 0.08, 0.08, 0.08]
     )
+    assert dispatcher.velocity_diagnostics["mit_acceleration_limited_shoulder_pan_flag"] == 1.0
+    assert dispatcher.velocity_diagnostics["mit_velocity_step_dt_s"] == pytest.approx(.02)
+    snapshot = dispatcher.velocity_diagnostics
     for name in ARM_JOINT_NAMES:
         assert robot.motors[name].mit_calls[-1][0] == pytest.approx(0.002)
 
     dispatcher.stop_arm_velocity(immediate=False)
+    assert dispatcher.velocity_diagnostics["mit_target_velocity_shoulder_pan_rad_s"] == 0.0
+    assert snapshot["mit_target_velocity_shoulder_pan_rad_s"] == 1.0
     now_s[0] += 0.01
     dispatcher.send_action(action)
     assert dispatcher.desired_velocity_rad_s == pytest.approx(
@@ -285,6 +295,7 @@ def test_mit_final_velocity_reserves_braking_distance_without_margin_jump(
     braking_speed = np.sqrt(2.0 * 8.0 * np.deg2rad(2.8))
     position, sent_velocity, *_ = robot.motors["wrist_flex"].mit_calls[-1]
     assert sent_velocity == pytest.approx(-braking_speed)
+    assert dispatcher.velocity_diagnostics["mit_braking_limited_wrist_flex_flag"] == 1.0
     assert position == pytest.approx(
         np.deg2rad(-75.2) - braking_speed * 0.015
     )

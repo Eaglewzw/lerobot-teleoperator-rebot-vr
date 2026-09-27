@@ -14,6 +14,7 @@ import numpy as np
 
 from ..constants import JOINT_NAMES
 from .motion import MOTION_FIELDNAMES
+from .velocity import VELOCITY_FIELDNAMES
 from ..control.types import (
     ARM_JOINT_NAMES,
     CartesianControlStatus,
@@ -81,6 +82,14 @@ SUMMARY_FIELDNAMES = (
     "p99_ms",
     "max_ms",
 )
+POSITION_FIELDNAMES = (
+    "controller_position_frame",
+    "mapping_sample_id",
+    *(f"{kind}_{axis}_m" for kind in (
+        "controller_position", "tcp_actual_position", "tcp_target_position",
+        "tcp_position_error",
+    ) for axis in "xyz"),
+)
 CSV_FIELDNAMES = (
     "timestamp_ns",
     *TIMESTAMP_FIELDNAMES,
@@ -99,6 +108,8 @@ CSV_FIELDNAMES = (
     "dq_norm_rad_s",
     *MIT_FIELDNAMES,
     *LATENCY_FIELDNAMES,
+    *POSITION_FIELDNAMES,
+    *VELOCITY_FIELDNAMES,
     *MOTION_FIELDNAMES,
 )
 
@@ -174,6 +185,24 @@ def build_csv_row(status: CartesianControlStatus) -> dict[str, object]:
             )
     for field_name in LATENCY_FIELDNAMES:
         row[field_name] = _optional_float(getattr(status, field_name))
+    row["controller_position_frame"] = status.controller_position_frame
+    row["mapping_sample_id"] = _optional_int(status.mapping_sample_id)
+    positions = {}
+    for kind in ("controller_position", "tcp_actual_position", "tcp_target_position"):
+        value = getattr(status, f"{kind}_m")
+        vector = None if value is None else np.asarray(value, dtype=np.float64)
+        if vector is not None and vector.shape != (3,):
+            raise ValueError(f"status.{kind}_m must contain three coordinates")
+        positions[kind] = vector
+    actual, target = positions["tcp_actual_position"], positions["tcp_target_position"]
+    positions["tcp_position_error"] = (
+        None if actual is None or target is None else target - actual
+    )
+    for kind, vector in positions.items():
+        for index, axis in enumerate("xyz"):
+            row[f"{kind}_{axis}_m"] = "" if vector is None else float(vector[index])
+    row.update({key: status.velocity_diagnostics.get(key, "") for key in VELOCITY_FIELDNAMES})
+    row["ik_result_applied_this_cycle"] = status.ik_result_applied_this_cycle
     row.update(dict.fromkeys(MOTION_FIELDNAMES, ""))
     row.update(phase="teleop", row_kind="sample")
     return row

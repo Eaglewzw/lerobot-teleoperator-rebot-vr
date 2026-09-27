@@ -18,6 +18,12 @@ vr_source:
 
 # 位姿映射
 cartesian_mapping:
+  linear_ff_max_speed_m_s: 0.3  # Cartesian feedforward norm limit, not joint speed.
+  linear_ff_max_acceleration_m_s2: 1.0
+  linear_ff_max_deceleration_m_s2: 4.0  # Only removes confirmed old-direction feedforward.
+  linear_ff_brake_confirm_s: 0.03  # Also requires at least two distinct samples.
+  linear_ff_jump_speed_m_s: 1.0  # Reject derivative if displacement exceeds slack + speed * dt.
+  linear_ff_jump_slack_m: 0.005
   position_scale: 1.0
   orientation_scale: 1.0
   position_filter_hz: 0.0  # 0: 关闭滤波
@@ -27,6 +33,10 @@ cartesian_mapping:
 
 # pose QP 逆运动学
 qp_ik:
+  qp_use_sent_velocity: false  # Experimental; combined real-motion trial failed.
+  split_contour_weight: 1.0  # 1: original isotropic task; >1 penalizes transverse error.
+  split_reference_speed_m_s: 0.0  # 0: disabled; governs position and velocity together.
+  split_reference_acceleration_m_s2: 1.5
   qp_solver: scipy  # scipy | osqp
   ik_mode: pose
   qp_position_cost: 20.0

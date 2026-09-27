@@ -100,7 +100,8 @@ class FullBodyQPIKController:
                 joint_upper_limit_rad=self.upper_limit_rad,
             )
             if self.config.ik_mode == "split":
-                qp = SplitIKSolver(kinematics, **solver_options)
+                qp = SplitIKSolver(kinematics, contour_weight=self.config.split_contour_weight,
+                                   **solver_options)
             else:
                 qp = FullBodyQPIKSolver(
                     kinematics,
@@ -324,6 +325,7 @@ class FullBodyQPIKController:
             and not mapping.reference_captured
         ):
             submitted = self.qp.submit_if_ready(
+                actual_position_m=mapping_position,
                 target=mapping.target,
                 frame=frame,
                 q_seed_rad=self._q_goal_rad.copy(),

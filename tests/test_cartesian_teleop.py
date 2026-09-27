@@ -25,6 +25,8 @@ from lerobot_teleoperator_rebot_vr.vr.pose_mapping import (
     TeleopState,
 )
 from lerobot_teleoperator_rebot_vr.vr.models import VRFrame
+from lerobot_teleoperator_rebot_vr.vr.tracking import ControllerSample
+from lerobot_teleoperator_rebot_vr.diagnostics.logger import build_csv_row
 from lerobot_teleoperator_rebot_vr.control.startup import (
     StartupPoseMover,
     reference_initial_q_to_dm,
@@ -182,6 +184,86 @@ def _observation(q_deg=(0.0, -60.0, -70.0, 0.0, 0.0, 0.0), gripper=-270.0):
     return result
 
 
+@pytest.mark.parametrize("source", ["xr", "robot_base"])
+def test_position_logging_preserves_input_and_mapped_target(source) -> None:
+    controller = FullBodyQPIKController(
+        FakeKinematics(), xr_to_base_rotation=XR_TO_BASE,
+        config=CartesianControlConfig(
+            position_scale=0.5, position_filter_hz=0.0,
+            position_deadband_m=0.0, stale_timeout_s=0.2,
+        ), ik_worker=ImmediateIKWorker(),
+    )
+    now = time.monotonic_ns()
+    def sample(offset, position, grip):
+        if source == "robot_base":
+            return _frame(now + offset, position=position, grip=grip)
+        return ControllerSample(
+            received_monotonic_ns=now + offset, tracking_timestamp_ns=offset,
+            stream_epoch=1, side="right", position=np.array(position),
+            quaternion_xyzw=np.array([0., 0., 0., 1.]), grip=grip, trigger=0.,
+        )
+    observation = _observation()
+    controller.update(sample(0, [1., 2., 3.], 0.), observation, .02, now_ns=now)
+    controller.update(sample(20_000_000, [1., 2., 3.], 1.), observation, .02,
+                      now_ns=now + 20_000_000)
+    moved = sample(40_000_000, [1.02, 1.96, 2.94], 1.)
+    _, status = controller.update(moved, observation, .02, now_ns=now + 40_000_000)
+    actual = np.deg2rad([0., -60., -70.])
+    delta = np.array([.02, -.04, -.06])
+    target = actual + .5 * (XR_TO_BASE @ delta if source == "xr" else delta)
+    np.testing.assert_allclose(status.controller_position_m, [1.02, 1.96, 2.94])
+    np.testing.assert_allclose(status.tcp_target_position_m, target)
+    row = build_csv_row(status)
+    assert row["controller_position_frame"] == source
+    assert row["mapping_sample_id"] == now + 40_000_000
+    assert row["ik_request_sample_id"] == now + 40_000_000
+    assert row["ik_request_sequence"] == row["ik_sequence"]
+    assert row["ik_result_applied_this_cycle"] is True
+    assert [row[f"ik_request_position_error_{a}_m"] for a in "xyz"] == pytest.approx(target-actual)
+    assert [row[f"ik_request_linear_velocity_{a}_m_s"] for a in "xyz"] == pytest.approx(np.zeros(3))
+    assert row["ik_request_linear_velocity_jump_rejected"] is True
+    assert row["qp_output_velocity_shoulder_pan_rad_s"] != ""
+    assert row["tracking_sample_received_monotonic_ns"] == now + 40_000_000
+    assert [row[f"tcp_position_error_{a}_m"] for a in "xyz"] == pytest.approx(target-actual)
+    _, stale = controller.update(moved, observation, .02, now_ns=now + 500_000_000)
+    stale_row = build_csv_row(stale)
+    assert stale_row["controller_position_x_m"] == ""
+    assert stale_row["controller_position_frame"] == ""
+    assert stale_row["tcp_target_position_x_m"] == ""
+    assert stale_row["mapping_sample_id"] == ""
+    assert stale_row["ik_request_sequence"] == ""
+    assert stale_row["qp_output_velocity_shoulder_pan_rad_s"] == ""
+    # A later update must not mutate the already-published snapshot.
+    np.testing.assert_allclose(status.tcp_target_position_m, target)
+
+
+def test_qp_diagnostics_keep_rejected_output_and_request_boundary_flags() -> None:
+    from dataclasses import replace
+    from lerobot_teleoperator_rebot_vr.ik.coordination import QPRequestCoordinator
+
+    worker = ImmediateIKWorker()
+    config = CartesianControlConfig(max_joint_speed_rad_s=1.,
+                                    max_joint_acceleration_rad_s2=2.)
+    qp = QPRequestCoordinator(worker, config, np.full(6, -3.), np.full(6, 3.))
+    qp.begin_generation()
+    assert qp.submit_if_ready(
+        target=PoseTarget(100, np.zeros(3), np.eye(3)), frame=_frame(100, grip=1.),
+        q_seed_rad=np.zeros(6), q_actual_rad=np.zeros(6), q_nominal_rad=np.zeros(6),
+        dt_s=.02, now_ns=100, actual_position_m=np.zeros(3),
+    )
+    worker.result = replace(worker.result, solve_time_ms=9.,
+                            joint_velocity_rad_s=np.array([.04, 1., 0., 0., 0., 0.]))
+    assert qp.consume_latest(state=TeleopState.ACTIVE, q_actual_rad=np.zeros(6), now_ns=200) is None
+    assert qp.result_diagnostics["qp_output_velocity_shoulder_lift_rad_s"] == 1.
+    assert qp.result_diagnostics["qp_speed_bound_active_shoulder_lift_flag"] == 1.
+    assert qp.result_diagnostics["qp_acceleration_bound_active_shoulder_pan_flag"] == 1.
+    assert qp.result_diagnostics["qp_acceleration_bound_active_elbow_flex_flag"] == 0.
+    assert qp.last_result_accepted_monotonic_ns is None
+    np.testing.assert_array_equal(qp.accepted_joint_velocity_rad_s, np.zeros(6))
+    qp.begin_generation()
+    assert qp.request_diagnostics == qp.result_diagnostics == {}
+
+
 def test_closed_loop_starts_from_actual_pose_and_atomically_applies_arm_and_wrist_target() -> None:
     worker = ImmediateIKWorker()
     controller = FullBodyQPIKController(
@@ -237,7 +319,7 @@ def test_closed_loop_starts_from_actual_pose_and_atomically_applies_arm_and_wris
     )
     request = worker.requests[-1]
     assert request.sample_id == now + 40_000_000
-    assert request.target_linear_velocity_m_s == pytest.approx([5.0, 0.0, 0.0])
+    assert request.target_linear_velocity_m_s == pytest.approx([0.0, 0.0, 0.0])
     assert request.target_angular_velocity_rad_s == pytest.approx(
         Rotation.from_matrix(rotation_base).as_rotvec() / 0.02
     )
@@ -477,7 +559,7 @@ def test_active_qp_command_uses_feedback_bounded_lookahead_without_arm_reshaping
     assert status.target_deg[0] == pytest.approx(np.rad2deg(0.25))
     assert status.command_deg[0] == pytest.approx(1.8)
     assert action["shoulder_pan.pos"] == pytest.approx(1.8)
-    assert status.target_linear_velocity_m_s == pytest.approx([5.0, 0.0, 0.0])
+    assert status.target_linear_velocity_m_s == pytest.approx([0.0, 0.0, 0.0])
     rendered = _status_line(status)
     assert "[ACTIVE]" in rendered
     assert "command" in rendered

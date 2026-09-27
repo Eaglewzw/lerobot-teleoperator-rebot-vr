@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import itertools
+
 import numpy as np
 import pytest
 from scipy.spatial.transform import Rotation
@@ -155,3 +157,99 @@ def test_split_reports_wrist_limit_clipping(split_model) -> None:
     assert result.reason == "wrist_clipped"
     assert result.wrist_clip_rad > 0.1
 
+
+def _scalar_wrist_choice(solver, candidates, seed):
+    """Pre-optimization scoring oracle, intentionally evaluated one at a time."""
+    lower = solver.lower_position_limit[3:] + solver.joint_limit_margin_rad
+    upper = solver.upper_position_limit[3:] - solver.joint_limit_margin_rad
+    raw = min(
+        candidates,
+        key=lambda candidate: (
+            float(np.linalg.norm(candidate - np.clip(candidate, lower, upper))),
+            float(np.linalg.norm(candidate - seed)),
+        ),
+    )
+    clipped = np.clip(raw, lower, upper)
+    return clipped, float(np.max(np.abs(raw - clipped)))
+
+
+@pytest.mark.parametrize("margin", [0.0, np.deg2rad(2.0)])
+def test_batched_wrist_scores_match_scalar_at_random_and_singular_poses(
+    split_model, monkeypatch, margin
+) -> None:
+    model, solver = split_model
+    solver.joint_limit_margin_rad = margin
+    reference = np.array([0.0, -0.8, -0.8, 0.0, 0.0, 0.0])
+    _, anchor = model.wrist_anchor_pose(reference)
+    rng = np.random.default_rng(24)
+    rotations = list(Rotation.random(600, random_state=rng).as_matrix())
+    for first, middle, last in itertools.product(
+        [-np.pi, 0.0, np.pi],
+        [-np.pi / 2, -np.pi / 2 + 1e-7, np.pi / 2 - 1e-7, np.pi / 2],
+        [-np.pi, 0.0, np.pi],
+    ):
+        rotations.append(
+            anchor
+            @ Rotation.from_euler(solver._wrist_sequence, [first, middle, last]).as_matrix()
+            @ solver._wrist_zero_rotation
+        )
+    generate = solver._equivalent_wrist_candidates
+    captured = []
+
+    def capture(*args):
+        candidates = generate(*args)
+        captured[:] = candidates
+        return candidates
+
+    monkeypatch.setattr(solver, "_equivalent_wrist_candidates", capture)
+    for index, rotation in enumerate(rotations):
+        lower, upper = solver.lower_position_limit[3:], solver.upper_position_limit[3:]
+        seed = [lower, upper, rng.uniform(lower, upper)][index % 3]
+        target, clip, _ = solver._wrist_target(rotation, reference, seed)
+        expected, expected_clip = _scalar_wrist_choice(solver, captured, seed)
+        np.testing.assert_array_equal(target, expected)
+        assert clip == expected_clip
+
+
+@pytest.mark.parametrize(
+    "candidates, expected",
+    [
+        ([[0.2, 0, 0], [-0.2, 0, 0]], [0.2, 0, 0]),
+        ([[-0.2, 0, 0], [0.2, 0, 0]], [-0.2, 0, 0]),
+        ([[0.4, 0, 0], [0.1, 0, 0]], [0.1, 0, 0]),
+        # An in-range candidate wins even when it is farther from the seed.
+        ([[0.51, 0, 0], [0.4, 0.4, 0.4]], [0.4, 0.4, 0.4]),
+    ],
+)
+def test_batched_wrist_score_priority_and_stable_ties(
+    split_model, monkeypatch, candidates, expected
+) -> None:
+    _, solver = split_model
+    solver.lower_position_limit[3:] = -0.5
+    solver.upper_position_limit[3:] = 0.5
+    monkeypatch.setattr(
+        solver, "_equivalent_wrist_candidates",
+        lambda *args: [np.asarray(candidate, dtype=float) for candidate in candidates],
+    )
+    target, _, _ = solver._wrist_target(np.eye(3), np.zeros(6), np.zeros(3))
+    np.testing.assert_array_equal(target, expected)
+
+
+def test_batched_wrist_target_is_continuous_across_euler_wrap(split_model) -> None:
+    model, solver = split_model
+    reference = np.array([0.0, -0.8, -0.8, 0.0, 0.0, 0.0])
+    solver.lower_position_limit[3:] = -2 * np.pi
+    solver.upper_position_limit[3:] = 2 * np.pi
+    _, anchor = model.wrist_anchor_pose(reference)
+    seed = np.array([np.pi - 0.02, 0.2, 0.1]) / solver._wrist_axis_signs
+    for first in np.linspace(np.pi - 0.01, np.pi + 0.01, 21):
+        angles = np.array([first, 0.2, 0.1])
+        rotation = (
+            anchor @ Rotation.from_euler(solver._wrist_sequence, angles).as_matrix()
+            @ solver._wrist_zero_rotation
+        )
+        target, clip, _ = solver._wrist_target(rotation, reference, seed)
+        np.testing.assert_allclose(target, angles / solver._wrist_axis_signs, atol=1e-12)
+        assert np.max(np.abs(target - seed)) < 0.011
+        assert clip == 0.0
+        seed = target

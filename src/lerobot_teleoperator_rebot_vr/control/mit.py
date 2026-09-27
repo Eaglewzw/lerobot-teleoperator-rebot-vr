@@ -13,6 +13,7 @@ import numpy as np
 from ..constants import ARM_EFFORT_LIMIT_NM
 from .dynamics import B601GravityCompensator
 from .joint_command import braking_velocity_bounds
+from ..diagnostics.velocity import vector_fields
 from .types import ARM_JOINT_NAMES, GRIPPER_NAME
 
 
@@ -124,6 +125,11 @@ class MITCommandDispatcher:
         self.gravity = B601GravityCompensator(dynamics_urdf)
         self._latest_observation: dict[str, Any] = {}
         self._target_velocity_rad_s = np.zeros(6, dtype=np.float64)
+        self._input_velocity_rad_s = np.zeros(6, dtype=np.float64)
+        self._speed_limited = np.zeros(6, dtype=bool)
+        self._acceleration_limited = np.zeros(6, dtype=bool)
+        self._braking_limited = np.zeros(6, dtype=bool)
+        self._velocity_step_dt_s = None
         self._desired_velocity_rad_s = np.zeros(6, dtype=np.float64)
         self._velocity_target_updated_s: float | None = None
         self._last_velocity_step_s: float | None = None
@@ -159,6 +165,8 @@ class MITCommandDispatcher:
         self._target_velocity_rad_s = np.clip(
             velocity, -self.velocity_limit_rad_s, self.velocity_limit_rad_s
         )
+        self._input_velocity_rad_s = velocity.copy()
+        self._speed_limited = velocity != self._target_velocity_rad_s
         self._velocity_target_updated_s = time.monotonic()
         self._velocity_aligned_position = self.position_lookahead_s is not None
         if self.acceleration_limit_rad_s2 is None:
@@ -167,8 +175,12 @@ class MITCommandDispatcher:
     def stop_arm_velocity(self, *, immediate: bool) -> None:
         """Request zero velocity, optionally bypassing the deceleration ramp."""
         self._target_velocity_rad_s.fill(0.0)
+        self._input_velocity_rad_s.fill(0.0)
+        self._speed_limited.fill(False)
         self._velocity_target_updated_s = None
         if immediate:
+            self._acceleration_limited.fill(False)
+            self._braking_limited.fill(False)
             self._desired_velocity_rad_s.fill(0.0)
             self._last_velocity_step_s = None
             self._velocity_aligned_position = False
@@ -191,6 +203,17 @@ class MITCommandDispatcher:
     def desired_velocity_rad_s(self) -> np.ndarray:
         return self._desired_velocity_rad_s.copy()
 
+    @property
+    def velocity_diagnostics(self) -> dict[str, object]:
+        return {
+            **vector_fields("mit_input_velocity", self._input_velocity_rad_s, "rad_s"),
+            **vector_fields("mit_target_velocity", self._target_velocity_rad_s, "rad_s"),
+            **vector_fields("mit_speed_limited", self._speed_limited, "flag"),
+            **vector_fields("mit_acceleration_limited", self._acceleration_limited, "flag"),
+            **vector_fields("mit_braking_limited", self._braking_limited, "flag"),
+            "mit_velocity_step_dt_s": self._velocity_step_dt_s,
+        }
+
     def send_action(self, action: dict[str, float]) -> dict[str, float]:
         goal_deg = {
             key.removesuffix(".pos"): float(value)
@@ -210,6 +233,7 @@ class MITCommandDispatcher:
         q_actual_rad = np.deg2rad(q_actual_deg)
         now_s = time.monotonic()
         self._advance_arm_velocity(now_s)
+        self._braking_limited.fill(False)
         if self._velocity_aligned_position:
             assert self.position_lookahead_s is not None
             safe_lower = np.where(
@@ -229,9 +253,11 @@ class MITCommandDispatcher:
                     safe_upper,
                     self.acceleration_limit_rad_s2,
                 )
+                before_braking = self._desired_velocity_rad_s
                 self._desired_velocity_rad_s = np.clip(
                     self._desired_velocity_rad_s, braking_lo, braking_hi
                 )
+                self._braking_limited = before_braking != self._desired_velocity_rad_s
             aligned_position_rad = np.clip(
                 q_actual_rad
                 + self._desired_velocity_rad_s * self.position_lookahead_s,
@@ -288,6 +314,8 @@ class MITCommandDispatcher:
         return {f"{name}.pos": value for name, value in goal_deg.items()}
 
     def _advance_arm_velocity(self, now_s: float) -> None:
+        self._acceleration_limited.fill(False)
+        self._velocity_step_dt_s = None
         if self.acceleration_limit_rad_s2 is None:
             self._desired_velocity_rad_s = self._target_velocity_rad_s.copy()
             self._last_velocity_step_s = now_s
@@ -297,11 +325,15 @@ class MITCommandDispatcher:
         if previous_s is None:
             return
         dt_s = float(np.clip(now_s - previous_s, 0.0, 0.05))
+        self._velocity_step_dt_s = dt_s
         max_change = self.acceleration_limit_rad_s2 * dt_s
         velocity_change = np.clip(
             self._target_velocity_rad_s - self._desired_velocity_rad_s,
             -max_change,
             max_change,
+        )
+        self._acceleration_limited = (
+            self._target_velocity_rad_s - self._desired_velocity_rad_s != velocity_change
         )
         self._desired_velocity_rad_s = np.clip(
             self._desired_velocity_rad_s + velocity_change,

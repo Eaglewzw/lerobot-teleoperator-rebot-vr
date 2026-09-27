@@ -6,6 +6,7 @@ from scipy.spatial.transform import Rotation
 from ..ik.async_worker import IKResult
 from ..ik.coordination import QPRequestCoordinator
 from ..vr.adapter import VR_SAMPLE_TYPES
+from ..vr.tracking import ControllerSample
 from ..vr.pose_mapping import PoseMappingUpdate, TeleopState
 from .gripper import GripperController
 from .types import CartesianControlConfig, CartesianControlStatus, IKWorker
@@ -90,6 +91,7 @@ def build_running_status(
     target_deg = np.rad2deg(q_goal_rad)
     return CartesianControlStatus(
         state=mapping.state,
+        velocity_diagnostics={**qp.request_diagnostics, **qp.result_diagnostics},
         tracking=tracking_fresh,
         ik_success=None if ik_result is None else ik_result.success,
         ik_error_m=None if ik_result is None else ik_result.position_error_m,
@@ -144,6 +146,19 @@ def build_running_status(
         tcp_target_position_m=(
             None if mapping.target is None else mapping.target.position.copy()
         ),
+        # Snapshot the fresh input before axis mapping/scaling/filtering.
+        # Legacy VRFrame positions have already been transformed upstream.
+        controller_position_m=(
+            None if frame is None or not tracking_fresh else np.asarray(
+                frame.position if isinstance(frame, ControllerSample) else frame.grip_pos,
+                dtype=np.float64,
+            ).copy()
+        ),
+        controller_position_frame=(
+            "" if frame is None or not tracking_fresh else
+            "xr" if isinstance(frame, ControllerSample) else "robot_base"
+        ),
+        mapping_sample_id=None if mapping.target is None else mapping.target.sample_id,
         tcp_actual_rotvec_rad=Rotation.from_matrix(ee_rotation).as_rotvec(),
         tcp_target_rotvec_rad=(
             None

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -128,3 +129,49 @@ def test_csv_log_cli_is_optional_path() -> None:
         "/tmp/log.csv"
     )
     assert "--csv-log" in parser.format_help()
+
+
+def test_cartesian_positions_round_trip_and_missing_values(tmp_path) -> None:
+    status = replace(
+        _status(), controller_position_m=np.array([1., 2., 3.]),
+        controller_position_frame="xr", mapping_sample_id=123456789,
+        tcp_actual_position_m=np.array([0.2, -0.1, 0.4]),
+        tcp_target_position_m=np.array([0.23, -0.12, 0.41]),
+        ik_result_applied_this_cycle=True,
+        velocity_diagnostics={"ik_request_sequence": 7,
+                              "qp_output_velocity_shoulder_pan_rad_s": -.25,
+                              "mit_acceleration_limited_shoulder_pan_flag": 1.0},
+    )
+    output = tmp_path / "positions.csv"
+    logger = CSVLogger(output)
+    logger.write_row(build_csv_row(status))
+    logger.write_row(build_csv_row(_status()))
+    logger.close()
+    with output.open(newline="") as stream:
+        present, missing = list(csv.DictReader(stream))
+    assert present["controller_position_frame"] == "xr"
+    assert present["mapping_sample_id"] == "123456789"
+    assert present["ik_request_sequence"] == "7"
+    assert float(present["qp_output_velocity_shoulder_pan_rad_s"]) == -.25
+    assert float(present["mit_acceleration_limited_shoulder_pan_flag"]) == 1.
+    assert present["ik_result_applied_this_cycle"] == "True"
+    assert missing["ik_request_sequence"] == ""
+    assert missing["mit_acceleration_limited_shoulder_pan_flag"] == ""
+    for prefix, expected in (
+        ("controller_position", [1., 2., 3.]),
+        ("tcp_actual_position", [0.2, -0.1, 0.4]),
+        ("tcp_target_position", [0.23, -0.12, 0.41]),
+        ("tcp_position_error", [0.03, -0.02, 0.01]),
+    ):
+        assert [float(present[f"{prefix}_{a}_m"]) for a in "xyz"] == pytest.approx(expected)
+        assert all(missing[f"{prefix}_{a}_m"] == "" for a in "xyz")
+    assert missing["mapping_sample_id"] == ""
+    assert missing["controller_position_frame"] == ""
+
+
+@pytest.mark.parametrize("field", [
+    "controller_position_m", "tcp_actual_position_m", "tcp_target_position_m",
+])
+def test_csv_rejects_malformed_position_vector(field) -> None:
+    with pytest.raises(ValueError, match="three coordinates"):
+        build_csv_row(replace(_status(), **{field: np.zeros(2)}))

@@ -118,7 +118,8 @@ def runner(monkeypatch):
     events = []
     handlers = {}
     args = build_parser().parse_args(["--no-move-to-initial"])
-    status = SimpleNamespace(feedback_valid=True, feedback_abort_requested=False)
+    status = SimpleNamespace(feedback_valid=True, feedback_abort_requested=False,
+                             velocity_diagnostics={})
     clock = Clock()
     monkeypatch.setattr(shutdown, "time", SimpleNamespace(
         monotonic=clock.monotonic, monotonic_ns=lambda: int(clock.now * 1e9), sleep=clock.sleep))

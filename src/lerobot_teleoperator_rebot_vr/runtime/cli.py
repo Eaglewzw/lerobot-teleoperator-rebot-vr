@@ -200,6 +200,12 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
     mapping.add_argument("--position-scale", type=float, default=1.0)
     mapping.add_argument("--orientation-scale", type=float, default=1.0)
     mapping.add_argument("--position-filter-hz", type=float, default=0.0)
+    mapping.add_argument("--linear-ff-max-speed-m-s", type=float, default=0.3)
+    mapping.add_argument("--linear-ff-max-acceleration-m-s2", type=float, default=1.0)
+    mapping.add_argument("--linear-ff-max-deceleration-m-s2", type=float, default=4.0)
+    mapping.add_argument("--linear-ff-brake-confirm-s", type=float, default=0.03)
+    mapping.add_argument("--linear-ff-jump-speed-m-s", type=float, default=1.0)
+    mapping.add_argument("--linear-ff-jump-slack-m", type=float, default=0.005)
     mapping.add_argument("--orientation-filter-hz", type=float, default=0.0)
     mapping.add_argument("--position-deadband-m", type=float, default=0.0)
     mapping.add_argument("--orientation-deadband-deg", type=float, default=0.0)
@@ -242,6 +248,12 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
     ik.add_argument("--qp-damping-max", type=float, default=0.1)
     ik.add_argument("--qp-smoothness-cost", type=float, default=0.05)
     ik.add_argument("--qp-posture-cost", type=float, default=0.01)
+    ik.add_argument("--qp-use-sent-velocity", action=argparse.BooleanOptionalAction,
+                    default=False, help="Experimental MIT sent-velocity constraint reference")
+    ik.add_argument("--split-contour-weight", type=float, default=1.0)
+    ik.add_argument("--split-reference-speed-m-s", type=float, default=0.0,
+                    help="Split IK reference governor speed; 0 disables it")
+    ik.add_argument("--split-reference-acceleration-m-s2", type=float, default=1.5)
     ik.add_argument(
         "--singularity-threshold",
         type=float,
@@ -418,6 +430,14 @@ def validate_args(args: argparse.Namespace) -> None:
             "exit-zero-acceleration-rad-s2": args.exit_zero_acceleration_rad_s2,
             "exit-zero-tolerance-deg": args.exit_zero_tolerance_deg,
             "fps": args.fps,
+            "linear-ff-max-speed-m-s": args.linear_ff_max_speed_m_s,
+            "split-reference-acceleration-m-s2": args.split_reference_acceleration_m_s2,
+            "split-contour-weight": args.split_contour_weight,
+            "linear-ff-max-acceleration-m-s2": args.linear_ff_max_acceleration_m_s2,
+            "linear-ff-max-deceleration-m-s2": args.linear_ff_max_deceleration_m_s2,
+            "linear-ff-brake-confirm-s": args.linear_ff_brake_confirm_s,
+            "linear-ff-jump-speed-m-s": args.linear_ff_jump_speed_m_s,
+            "linear-ff-jump-slack-m": args.linear_ff_jump_slack_m,
             "status-rate": args.status_rate,
         },
         "positive",
@@ -437,6 +457,7 @@ def validate_args(args: argparse.Namespace) -> None:
     _validate_named_values(
         {
             "position-scale": args.position_scale,
+            "split-reference-speed-m-s": args.split_reference_speed_m_s,
             "orientation-scale": args.orientation_scale,
             "position-filter-hz": args.position_filter_hz,
             "orientation-filter-hz": args.orientation_filter_hz,
@@ -449,6 +470,8 @@ def validate_args(args: argparse.Namespace) -> None:
         allow_zero=True,
     )
 
+    if args.split_contour_weight < 1:
+        raise ValueError("split-contour-weight must be >= 1")
     if args.duration < 0.0:
         raise ValueError("duration must be non-negative")
 

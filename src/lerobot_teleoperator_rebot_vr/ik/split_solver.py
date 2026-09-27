@@ -54,6 +54,7 @@ class SplitIKSolver:
         kinematics,
         *,
         solver: str = "scipy",
+        contour_weight: float = 1.0,
         position_cost: float = 20.0,
         orientation_cost: float = 2.0,
         orientation_cost_min: float = 0.05,
@@ -78,6 +79,7 @@ class SplitIKSolver:
         self._position_solver = FullBodyQPIKSolver(
             _WristAnchorKinematics(kinematics),
             solver=solver,
+            position_contour_weight=contour_weight,
             ik_mode="position",
             position_cost=position_cost,
             orientation_cost=orientation_cost,
@@ -258,14 +260,15 @@ class SplitIKSolver:
         if np.any(lower >= upper):
             raise ValueError("joint limit margin leaves no wrist range")
 
-        def candidate_score(candidate: np.ndarray) -> tuple[float, float]:
-            clipped = np.clip(candidate, lower, upper)
-            return (
-                float(np.linalg.norm(candidate - clipped)),
-                float(np.linalg.norm(candidate - wrist_seed)),
-            )
-
-        raw_target = min(candidates, key=candidate_score)
+        # Score all candidates together to avoid dozens of tiny NumPy calls.
+        # Stable lexicographic sorting preserves min()'s first-candidate tie rule:
+        # limit violation is primary, distance from the seed is secondary.
+        candidate_matrix = np.asarray(candidates)
+        violations = np.linalg.norm(
+            candidate_matrix - np.clip(candidate_matrix, lower, upper), axis=1
+        )
+        distances = np.linalg.norm(candidate_matrix - wrist_seed, axis=1)
+        raw_target = candidate_matrix[np.lexsort((distances, violations))[0]]
         clipped_target = np.clip(raw_target, lower, upper)
         clip_rad = float(np.max(np.abs(raw_target - clipped_target)))
         return clipped_target, clip_rad, relative_target

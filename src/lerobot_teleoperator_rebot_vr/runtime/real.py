@@ -113,6 +113,10 @@ def _run_arm(args, *, session=None, arm_id=None) -> None:
         qp_damping_max=args.qp_damping_max,
         qp_smoothness_cost=args.qp_smoothness_cost,
         qp_posture_cost=args.qp_posture_cost,
+        qp_use_sent_velocity=(args.qp_use_sent_velocity and args.motor_control_mode == "mit"),
+        split_contour_weight=args.split_contour_weight,
+        split_reference_speed_m_s=args.split_reference_speed_m_s,
+        split_reference_acceleration_m_s2=args.split_reference_acceleration_m_s2,
         singularity_threshold=args.singularity_threshold,
         singularity_critical_threshold=args.singularity_critical_threshold,
         singularity_characteristic_length_m=(
@@ -121,6 +125,12 @@ def _run_arm(args, *, session=None, arm_id=None) -> None:
         joint_limit_margin_deg=args.joint_limit_margin_deg,
         qp_max_solve_time_ms=args.qp_max_solve_time_ms,
         position_scale=args.position_scale,
+        linear_ff_max_speed_m_s=args.linear_ff_max_speed_m_s,
+        linear_ff_max_acceleration_m_s2=args.linear_ff_max_acceleration_m_s2,
+        linear_ff_max_deceleration_m_s2=args.linear_ff_max_deceleration_m_s2,
+        linear_ff_brake_confirm_s=args.linear_ff_brake_confirm_s,
+        linear_ff_jump_speed_m_s=args.linear_ff_jump_speed_m_s,
+        linear_ff_jump_slack_m=args.linear_ff_jump_slack_m,
         orientation_scale=args.orientation_scale,
         position_filter_hz=args.position_filter_hz,
         orientation_filter_hz=args.orientation_filter_hz,
@@ -398,6 +408,14 @@ def _run_arm(args, *, session=None, arm_id=None) -> None:
             else:
                 sent_action = _send_feedback_hold_action(robot_io, action)
             send_finished_ns = time.monotonic_ns()
+            if args.qp_use_sent_velocity and isinstance(robot_io, MITCommandDispatcher):
+                if (sent_action is None or not status.feedback_valid
+                        or status.state.value != "active"):
+                    arm_controller.qp.cancel_pending_motor_request()
+                if sent_action is not None:
+                    arm_controller.qp.observe_sent_velocity(
+                        robot_io.desired_velocity_rad_s, send_finished_ns)
+                status.velocity_diagnostics.update(arm_controller.qp.request_diagnostics)
             send_action_ms = (send_finished_ns - send_started_ns) * 1e-6
 
             sample_received_ns = (
@@ -489,6 +507,11 @@ def _run_arm(args, *, session=None, arm_id=None) -> None:
                     )
                 ),
                 motor_control_mode=args.motor_control_mode,
+                velocity_diagnostics={
+                    **status.velocity_diagnostics,
+                    **(robot_io.velocity_diagnostics
+                       if isinstance(robot_io, MITCommandDispatcher) and command_sent else {}),
+                },
                 mit_desired_velocity_rad_s=(
                     robot_io.desired_velocity_rad_s
                     if isinstance(robot_io, MITCommandDispatcher)

@@ -1,5 +1,5 @@
 # Two upright B601 arms, parallel and facing the same direction.
-# Full mit_split profile speed: 1.0 pose scales, 2.0 rad/s, 6.0 rad/s^2.
+# Mapping: 0.5 position / 0.6 orientation; speed: 2.0 rad/s, 6.0 rad/s^2.
 # These are configured control limits, not motor hardware maximum ratings.
 # Physical arm mapping verified after USB re-enumeration; keep these USB sockets.
 # by-path identifies the USB socket, not the arm itself: do not exchange cables.
@@ -19,8 +19,8 @@ arms:
         initial_move_tolerance_deg: 4.0  # Accept the observed ~3.3 deg startup residual.
         exit_zero_tolerance_deg: 3.0  # Independent of startup; never relax to hide residuals.
       cartesian_mapping:
-        position_scale: 1.0
-        orientation_scale: 1.0
+        position_scale: 0.5
+        orientation_scale: 0.6
       motion_limits:
         max_joint_speed_rad_s: 2.0
         max_joint_acceleration_rad_s2: 6.0
@@ -38,8 +38,8 @@ arms:
       startup:
         exit_zero_tolerance_deg: 3.0
       cartesian_mapping:
-        position_scale: 1.0
-        orientation_scale: 1.0
+        position_scale: 0.5
+        orientation_scale: 0.6
       motion_limits:
         max_joint_speed_rad_s: 2.0
         max_joint_acceleration_rad_s2: 6.0
