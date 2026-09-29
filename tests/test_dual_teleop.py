@@ -193,7 +193,7 @@ def test_bad_config_rejected_before_hardware(config_file, kind):
         left["hand"] = "right"
     else:
         left["overrides"] = {"unknown": {"typo": 1}, "bad_gain": {"mit_kp": [-1] * 6},
-                             "bad_mode": {"ik_mode": "oops"}, "bad_bool": {"no_calibrate": "false"},
+                             "bad_mode": {"qp_solver": "oops"}, "bad_bool": {"no_calibrate": "false"},
                              "reserved": {"robot_port": "/dev/other"}}[kind]
     path.write_text(yaml.safe_dump(data))
     with pytest.raises(ValueError):

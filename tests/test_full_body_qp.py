@@ -100,9 +100,11 @@ def test_qp_acceleration_constraint_preserves_previous_velocity() -> None:
     assert result.success
     # With dq_prev already at the speed limit, the next step must be allowed
     # to remain near that speed. The old implementation limited it to roughly
-    # 2*acceleration*dt instead (0.4 and 1.2 rad/s respectively).
-    assert np.all(result.q_target_rad > 0.5 * speed * dt)
-    assert np.all(result.q_target_rad <= speed * dt + 1e-8)
+    # 2*acceleration*dt instead (0.4 and 1.2 rad/s respectively). The wrist
+    # is locked in position-only mode, so only q1-q3 advance.
+    assert np.all(result.q_target_rad[:3] > 0.5 * speed[:3] * dt)
+    assert np.all(result.q_target_rad[:3] <= speed[:3] * dt + 1e-8)
+    assert np.all(result.q_target_rad[3:] == 0.0)
 
 
 def test_adaptive_qp_weights_change_smoothly_and_monotonically() -> None:
@@ -116,16 +118,15 @@ def test_adaptive_qp_weights_change_smoothly_and_monotonically() -> None:
         singularity_threshold=0.08,
         damping_min=1e-3,
         damping_max=0.1,
-        orientation_cost=2.0,
-        orientation_cost_min=0.05,
     )
     sigma = np.linspace(0.0, 0.1, 1001)
     weights = np.asarray([solver._adaptive_weights(value) for value in sigma])
 
-    assert weights[0] == pytest.approx([0.1, 0.05])
-    assert weights[-1] == pytest.approx([1e-3, 2.0])
+    # Damping adapts smoothly; orientation weight is unused (always zero).
+    assert weights[0] == pytest.approx([0.1, 0.0])
+    assert weights[-1] == pytest.approx([1e-3, 0.0])
     assert np.all(np.diff(weights[:, 0]) <= 1e-12)
-    assert np.all(np.diff(weights[:, 1]) >= -1e-12)
+    assert np.all(weights[:, 1] == 0.0)
     epsilon = 1e-8
     below_critical = solver._adaptive_weights(0.02 - epsilon)
     above_critical = solver._adaptive_weights(0.02 + epsilon)
@@ -155,7 +156,6 @@ def test_position_mode_ignores_orientation_but_keeps_diagnostics() -> None:
 
     common = dict(
         position_cost=20.0,
-        orientation_cost=2.0,
         damping_min=1e-6,
         damping_max=1e-6,
         smoothness_cost=0.0,
@@ -173,16 +173,13 @@ def test_position_mode_ignores_orientation_but_keeps_diagnostics() -> None:
         max_joint_speed=np.full(6, 10.0),
         max_joint_acceleration=np.full(6, 1000.0),
     )
-    pose_result = FullBodyQPIKSolver(
-        LinearKinematics(), ik_mode="pose", **common
-    ).solve(**arguments)
     position_result = FullBodyQPIKSolver(
-        LinearKinematics(), ik_mode="position", **common
+        LinearKinematics(), **common
     ).solve(**arguments)
 
-    assert pose_result.success
     assert position_result.success
-    assert np.linalg.norm(pose_result.q_target_rad[3:]) > 1e-4
+    # The wrist stays locked and orientation never enters the QP, but the
+    # orientation error remains available as a diagnostic.
     assert position_result.q_target_rad == pytest.approx(q, abs=1e-9)
     assert position_result.orientation_weight == pytest.approx(0.0)
     assert position_result.orientation_error_rad == pytest.approx(np.sqrt(3.0))
@@ -217,7 +214,6 @@ def test_position_mode_hard_locks_wrist_velocity() -> None:
     q = np.zeros(6)
     result = FullBodyQPIKSolver(
         RedundantPositionKinematics(),
-        ik_mode="position",
         damping_min=1e-9,
         damping_max=1e-9,
         smoothness_cost=0.0,
@@ -270,7 +266,6 @@ def test_qp_velocity_reserves_acceleration_braking_distance() -> None:
     previous[0] = braking_speed
     result = FullBodyQPIKSolver(
         LinearKinematics(),
-        ik_mode="position",
         damping_min=1e-9,
         damping_max=1e-9,
         smoothness_cost=0.0,
@@ -296,7 +291,6 @@ def test_qp_velocity_reserves_acceleration_braking_distance() -> None:
     q_next = q + result.joint_velocity_rad_s * dt
     next_result = FullBodyQPIKSolver(
         LinearKinematics(),
-        ik_mode="position",
         damping_min=1e-9,
         damping_max=1e-9,
         smoothness_cost=0.0,
@@ -335,10 +329,10 @@ def test_qp_result_exposes_singularity_and_motion_diagnostics(model) -> None:
     )
 
     assert result.success
-    assert result.sigma_min == pytest.approx(0.2764982456, rel=1e-5)
-    assert result.condition_number == pytest.approx(10.1621218, rel=1e-5)
+    assert result.sigma_min == pytest.approx(0.5608144715635663, rel=1e-5)
+    assert result.condition_number == pytest.approx(3.7086986764882415, rel=1e-5)
     assert result.damping == pytest.approx(1e-3)
-    assert result.orientation_weight == pytest.approx(2.0)
+    assert result.orientation_weight == pytest.approx(0.0)
     assert result.joint_velocity_rad_s == pytest.approx(np.zeros(6), abs=1e-8)
 
 
@@ -364,7 +358,6 @@ def test_position_qp_combines_target_velocity_feedforward_with_error_feedback() 
     feedforward = np.array([0.2, -0.1, 0.05])
     result = FullBodyQPIKSolver(
         LinearKinematics(),
-        ik_mode="position",
         position_cost=100.0,
         position_gain=10.0,
         damping_min=1e-9,
@@ -406,7 +399,9 @@ def test_singular_task_jacobian_activates_maximum_protection() -> None:
         @staticmethod
         def tcp_jacobian(q):
             del q
-            return np.diag([0.3, 0.3, 0.3, 1.0, 1.0, 0.01])
+            # Position-only task reads jac[:3, :3] scaled by the characteristic
+            # length 0.3: diag(0.3, 0.3, 0.0006)/0.3 has sigma_min 0.002.
+            return np.diag([0.3, 0.3, 0.0006, 1.0, 1.0, 1.0])
 
     q = np.zeros(6)
     result = FullBodyQPIKSolver(
@@ -423,10 +418,10 @@ def test_singular_task_jacobian_activates_maximum_protection() -> None:
     )
 
     assert result.success
-    assert result.sigma_min == pytest.approx(0.01)
-    assert result.condition_number == pytest.approx(100.0)
+    assert result.sigma_min == pytest.approx(0.002)
+    assert result.condition_number == pytest.approx(500.0)
     assert result.damping == pytest.approx(0.1)
-    assert result.orientation_weight == pytest.approx(0.05)
+    assert result.orientation_weight == pytest.approx(0.0)
 
 
 def test_qp_failure_does_not_return_partial_joint_target(model):
@@ -571,7 +566,6 @@ def test_grip_capture_resets_stale_command_velocity_and_skips_first_qp(model):
 def test_contour_speed_gate_engages_holds_releases_and_resets(model) -> None:
     solver = FullBodyQPIKSolver(
         model,
-        ik_mode="position",
         position_contour_weight=25.0,
         position_contour_mode="shoulder_lateral",
         contour_speed_gate=True,
@@ -605,7 +599,6 @@ def test_contour_speed_gate_engages_holds_releases_and_resets(model) -> None:
 def test_contour_speed_gate_disabled_applies_constant_weight(model) -> None:
     solver = FullBodyQPIKSolver(
         model,
-        ik_mode="position",
         position_contour_weight=9.0,
         position_contour_mode="shoulder_lateral",
         contour_speed_gate=False,
@@ -631,10 +624,9 @@ def test_contour_speed_gate_at_rest_matches_baseline_solve(model) -> None:
         max_joint_acceleration=np.full(6, 2.0),
         target_linear_velocity_m_s=np.zeros(3),
     )
-    baseline = FullBodyQPIKSolver(model, ik_mode="position", max_solve_time_ms=20.0)
+    baseline = FullBodyQPIKSolver(model, max_solve_time_ms=20.0)
     gated = FullBodyQPIKSolver(
         model,
-        ik_mode="position",
         max_solve_time_ms=20.0,
         position_contour_weight=25.0,
         position_contour_mode="shoulder_lateral",
@@ -652,8 +644,7 @@ def test_contour_gate_parameter_validation(model) -> None:
     with pytest.raises(ValueError, match="contour speed gate"):
         FullBodyQPIKSolver(
             model,
-            ik_mode="position",
-            position_contour_weight=9.0,
+                position_contour_weight=9.0,
             position_contour_mode="shoulder_lateral",
             contour_speed_gate=True,
             contour_gate_full_m_s=0.05,

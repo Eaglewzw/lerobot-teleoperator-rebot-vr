@@ -68,7 +68,7 @@ def test_reference_rejects_unbounded_settings(value):
 def test_cli_rejects_reference_outside_mit_split():
     args=build_parser().parse_args([])
     args.mit_q1_reference_error_deg=2
-    with pytest.raises(ValueError,match='MIT split'):
+    with pytest.raises(ValueError,match='MIT motor control'):
         validate_args(args)
 
 

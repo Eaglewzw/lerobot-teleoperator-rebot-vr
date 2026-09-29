@@ -71,7 +71,7 @@ def test_qp_uses_sent_not_accepted_velocity_without_overwriting_accepted():
 
 
 def test_governor_request_position_and_velocity_are_paired():
-    qp,w=coordinator(CartesianControlConfig(ik_mode='split',split_reference_speed_m_s=.65))
+    qp,w=coordinator(CartesianControlConfig(split_reference_speed_m_s=.65))
     qp.reference_motion.reset([0,0,0]);submit(qp,1_000_000_000)
     assert 0<w.request.target_position[0]<.001
     assert 0<w.request.target_linear_velocity_m_s[0]<=.015+1e-10
@@ -98,7 +98,7 @@ def test_contour_cost_reduces_transverse_motion_under_joint_braking_constraint()
         dq_previous=np.array([0,1,0,0,0,0]),dt=.02,q_nominal=np.zeros(6),max_joint_speed=np.full(6,2.),
         max_joint_acceleration=np.array([60.,6.,6.,6.,6.,6.]))
     def solve(weight):
-        return FullBodyQPIKSolver(m,ik_mode='position',position_contour_weight=weight,
+        return FullBodyQPIKSolver(m,position_contour_weight=weight,
            max_solve_time_ms=100,position_gain=3,damping_min=.001,damping_max=.001).solve(**args)
     baseline=solve(1);guarded=solve(25)
     assert baseline.success and guarded.success

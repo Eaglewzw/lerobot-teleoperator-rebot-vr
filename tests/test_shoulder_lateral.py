@@ -27,7 +27,7 @@ class Model:
 
 
 def solve(model, weight=1., target=(.03, 0, 0), previous=(0, .4, 0, 0, 0, 0)):
-    solver = FullBodyQPIKSolver(model, ik_mode='position', position_gain=3,
+    solver = FullBodyQPIKSolver(model, position_gain=3,
         position_contour_weight=weight, position_contour_mode='shoulder_lateral',
         damping_min=.001, damping_max=.001, max_solve_time_ms=100)
     return solver.solve(target_position=model.rotation @ np.array(target), target_rotation=np.eye(3),

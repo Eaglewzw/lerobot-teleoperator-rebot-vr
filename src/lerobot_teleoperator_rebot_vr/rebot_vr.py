@@ -91,10 +91,7 @@ class RebotVRTeleop(Teleoperator):
             self._kinematics = B601Kinematics()
             control_config = CartesianControlConfig(
                 qp_solver=self.config.qp_solver,
-                ik_mode=self.config.ik_mode,
                 qp_position_cost=self.config.qp_position_cost,
-                qp_orientation_cost=self.config.qp_orientation_cost,
-                qp_orientation_cost_min=self.config.qp_orientation_cost_min,
                 qp_position_gain=self.config.qp_position_gain,
                 qp_orientation_gain=self.config.qp_orientation_gain,
                 qp_damping=self.config.qp_damping,

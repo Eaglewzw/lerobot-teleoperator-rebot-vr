@@ -29,7 +29,7 @@ class QPRequestCoordinator:
         self.reference_motion = (
             CartesianReferenceMotion(config.split_reference_speed_m_s,
                                      config.split_reference_acceleration_m_s2)
-            if config.ik_mode == "split" and config.split_reference_speed_m_s > 0 else None
+            if config.split_reference_speed_m_s > 0 else None
         )
         self._sent_velocity = None
         self._sent_velocity_ns = None

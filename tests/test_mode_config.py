@@ -28,20 +28,20 @@ def test_motor_mode_automatically_loads_matching_yaml() -> None:
     pos_vel = parser.parse_args(["--motor-control-mode", "pos_vel"])
     mit = parser.parse_args(["--motor-control-mode", "mit"])
 
-    assert pos_vel.control_config.name == "pos_vel.yaml"
+    assert pos_vel.control_config.name == "pos_vel_split.yaml"
     assert pos_vel.motor_control_mode == "pos_vel"
-    assert pos_vel.max_joint_speed_rad_s == pytest.approx(5.5)
-    assert pos_vel.max_joint_acceleration_rad_s2 == pytest.approx(20.0)
-    assert pos_vel.wrist_speed_rad_s == pytest.approx(12.0)
-    assert pos_vel.wrist_acceleration_rad_s2 == pytest.approx(60.0)
+    assert pos_vel.max_joint_speed_rad_s == pytest.approx(3.0)
+    assert pos_vel.max_joint_acceleration_rad_s2 == pytest.approx(10.0)
+    assert pos_vel.wrist_speed_rad_s == pytest.approx(4.0)
+    assert pos_vel.wrist_acceleration_rad_s2 == pytest.approx(15.0)
     assert pos_vel.gripper_max_speed_deg_s == pytest.approx(1200.0)
     assert pos_vel.gripper_max_acceleration_deg_s2 == pytest.approx(5000.0)
     assert pos_vel.gripper_mit_kp == pytest.approx(8.0)
     assert pos_vel.gripper_mit_kd == pytest.approx(0.3)
-    assert mit.control_config.name == "mit.yaml"
+    assert mit.control_config.name == "mit_split.yaml"
     assert mit.motor_control_mode == "mit"
-    assert mit.mit_kp == pytest.approx([25, 30, 30, 10, 10, 10])
-    assert mit.mit_kd == pytest.approx([5, 5, 4, 0.5, 0.5, 0.5])
+    assert mit.mit_kp == pytest.approx([25, 30, 30, 25, 25, 25])
+    assert mit.mit_kd == pytest.approx([4, 4, 4, 0.5, 0.5, 0.5])
     validate_args(pos_vel)
     validate_args(mit)
 
@@ -77,11 +77,11 @@ def test_yaml_files_cover_every_applicable_cli_parameter() -> None:
     }
     config_dir = Path(__file__).parents[1] / "config"
 
-    for mode, excluded in (
-        ("pos_vel", {"control_config", *MIT_PARAMETERS}),
-        ("mit", {"control_config"}),
+    for filename, excluded in (
+        ("pos_vel_split.yaml", {"control_config", *MIT_PARAMETERS}),
+        ("mit_split.yaml", {"control_config"}),
     ):
-        path = config_dir / f"{mode}.yaml"
+        path = config_dir / filename
         configured = set(
             _flatten_mode_config(yaml.safe_load(path.read_text()), path)
         )
@@ -89,16 +89,14 @@ def test_yaml_files_cover_every_applicable_cli_parameter() -> None:
 
 
 @pytest.mark.parametrize(
-    ("filename", "motor_mode", "ik_mode"),
+    ("filename", "motor_mode"),
     (
-        ("pos_vel_pose.yaml", "pos_vel", "pose"),
-        ("pos_vel_split.yaml", "pos_vel", "split"),
-        ("mit_pose.yaml", "mit", "pose"),
-        ("mit_split.yaml", "mit", "split"),
+        ("pos_vel_split.yaml", "pos_vel"),
+        ("mit_split.yaml", "mit"),
     ),
 )
 def test_named_control_profiles_are_complete_and_loadable(
-    filename: str, motor_mode: str, ik_mode: str
+    filename: str, motor_mode: str
 ) -> None:
     parser = build_parser()
     config_path = Path(__file__).parents[1] / "config" / filename
@@ -123,7 +121,6 @@ def test_named_control_profiles_are_complete_and_loadable(
         ]
     )
     assert args.motor_control_mode == motor_mode
-    assert args.ik_mode == ik_mode
     validate_args(args)
 
 
@@ -131,7 +128,7 @@ def test_mit_profiles_load_their_own_motor_settings() -> None:
     config_dir = Path(__file__).parents[1] / "config"
     parser = build_parser()
 
-    for filename in ("mit_pose.yaml", "mit_split.yaml"):
+    for filename in ("mit_split.yaml",):
         config_path = config_dir / filename
         configured = yaml.safe_load(config_path.read_text())
         args = parser.parse_args(
@@ -151,17 +148,6 @@ def test_mit_profiles_load_their_own_motor_settings() -> None:
         assert args.mit_gravity_scale == pytest.approx(
             configured["mit"]["mit_gravity_scale"]
         )
-
-
-@pytest.mark.parametrize("mode", ("pos_vel", "mit"))
-def test_explicit_pose_profile_matches_compatibility_default(mode: str) -> None:
-    config_dir = Path(__file__).parents[1] / "config"
-    default_path = config_dir / f"{mode}.yaml"
-    pose_path = config_dir / f"{mode}_pose.yaml"
-
-    assert _flatten_mode_config(
-        yaml.safe_load(default_path.read_text()), default_path
-    ) == _flatten_mode_config(yaml.safe_load(pose_path.read_text()), pose_path)
 
 
 def test_custom_config_must_match_selected_mode(tmp_path: Path) -> None:

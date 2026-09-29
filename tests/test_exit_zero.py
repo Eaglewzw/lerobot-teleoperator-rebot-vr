@@ -78,7 +78,7 @@ def test_zero_trajectory_reaches_feedback_and_holds_gripper_with_lower_speed(zer
     assert all(v[:6] == pytest.approx([np.rad2deg(0.25)] * 6) for v in robot.velocity_limits)
     assert all(v[6] == 1200.0 for v in robot.velocity_limits)
     assert robot.config.pos_vel_velocity is original_velocity
-    assert args.max_joint_speed_rad_s == 5.5
+    assert args.max_joint_speed_rad_s == 3.0
 
 
 @pytest.mark.parametrize("failure", ["stall", "timeout"])

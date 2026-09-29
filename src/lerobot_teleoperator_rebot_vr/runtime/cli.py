@@ -16,8 +16,8 @@ from .shutdown import ShutdownPolicy
 
 
 MODE_CONFIG_FILENAMES = {
-    "pos_vel": "pos_vel.yaml",
-    "mit": "mit.yaml",
+    "pos_vel": "pos_vel_split.yaml",
+    "mit": "mit_split.yaml",
 }
 
 
@@ -127,8 +127,8 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
         default=None,
         metavar="PATH",
         help=(
-            "control YAML; defaults to config/pos_vel.yaml or config/mit.yaml "
-            "according to --motor-control-mode"
+            "control YAML; defaults to config/pos_vel_split.yaml or "
+            "config/mit_split.yaml according to --motor-control-mode"
         ),
     )
     robot.add_argument("--robot-port", default="/dev/ttyACM0")
@@ -212,19 +212,7 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
 
     ik = parser.add_argument_group("IK and safety")
     ik.add_argument("--qp-solver", choices=("scipy", "osqp"), default="scipy")
-    ik.add_argument(
-        "--ik-mode",
-        choices=("pose", "position", "split"),
-        default="pose",
-        help=(
-            "pose tracks TCP XYZ/orientation; position tracks TCP XYZ only; "
-            "split tracks joint4 XYZ with q1-q3 and wrist-relative orientation "
-            "with q4-q6"
-        ),
-    )
     ik.add_argument("--qp-position-cost", type=float, default=20.0)
-    ik.add_argument("--qp-orientation-cost", type=float, default=2.0)
-    ik.add_argument("--qp-orientation-cost-min", type=float, default=0.05)
     ik.add_argument(
         "--qp-position-gain",
         type=float,
@@ -235,7 +223,7 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
         "--qp-orientation-gain",
         type=float,
         default=8.0,
-        help="Cartesian orientation error feedback gain in 1/s",
+        help="Split-IK wrist orientation error feedback gain in 1/s",
     )
     ik.add_argument(
         "--qp-damping",
@@ -481,12 +469,12 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("split-contour-weight must be >= 1")
     if not np.isfinite(args.mit_q1_reference_error_deg) or not 0 <= args.mit_q1_reference_error_deg <= 2:
         raise ValueError("mit-q1-reference-error-deg must be finite and within [0, 2]")
-    if args.mit_q1_reference_error_deg and (args.motor_control_mode != "mit" or args.ik_mode != "split"):
-        raise ValueError("q1 reference requires MIT split mode")
+    if args.mit_q1_reference_error_deg and args.motor_control_mode != "mit":
+        raise ValueError("q1 reference requires MIT motor control mode")
     if not np.isfinite(args.mit_arm_reference_error_deg) or not 0 <= args.mit_arm_reference_error_deg <= 3:
         raise ValueError("mit-arm-reference-error-deg must be finite and within [0, 3]")
-    if args.mit_arm_reference_error_deg and (args.motor_control_mode != "mit" or args.ik_mode != "split"):
-        raise ValueError("arm reference requires MIT split mode")
+    if args.mit_arm_reference_error_deg and args.motor_control_mode != "mit":
+        raise ValueError("arm reference requires MIT motor control mode")
     if args.mit_arm_reference_error_deg and args.mit_q1_reference_error_deg:
         raise ValueError("arm reference and q1 reference are mutually exclusive")
     if args.duration < 0.0:
@@ -497,8 +485,6 @@ def validate_args(args: argparse.Namespace) -> None:
         args.qp_position_cost,
         args.qp_position_gain,
         args.qp_orientation_gain,
-        args.qp_orientation_cost,
-        args.qp_orientation_cost_min,
         args.qp_damping,
         args.qp_damping_max,
         args.qp_smoothness_cost,
@@ -516,12 +502,6 @@ def validate_args(args: argparse.Namespace) -> None:
         and args.qp_position_cost > 0
         and args.qp_position_gain > 0
         and args.qp_orientation_gain > 0
-        and args.qp_orientation_cost >= 0
-        and args.qp_orientation_cost_min >= 0
-        and not (
-            args.qp_orientation_cost > 0
-            and args.qp_orientation_cost_min > args.qp_orientation_cost
-        )
         and 0 <= args.qp_damping <= args.qp_damping_max
         and args.qp_smoothness_cost >= 0
         and args.qp_posture_cost >= 0
@@ -625,9 +605,9 @@ def status_line(status: CartesianControlStatus) -> str:
 
     summary = []
     if status.tcp_position_error_m is not None:
-        task_name = "J4" if status.ik_mode == "split" else "TCP"
+        # Split IK controls the joint4-axis point.
         summary.append(
-            f"{task_name}={status.tcp_position_error_m * 1000.0:.1f}mm"
+            f"J4={status.tcp_position_error_m * 1000.0:.1f}mm"
         )
     if status.orientation_error_deg is not None:
         summary.append(f"rot={status.orientation_error_deg:.1f}deg")

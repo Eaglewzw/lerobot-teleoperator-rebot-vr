@@ -48,12 +48,7 @@ R_target = Exp(orientation_scale * Log(Delta_R)) * R_tcp_ref
 
 ## IK 与电机下发
 
-| 模式 | 行为 |
-|---|---|
-| pose | 六轴一起跟踪 TCP 位置、姿态 |
-| position | q1–q3 跟踪位置；q4–q6 保持激活时目标 |
-| split | q1–q3 跟踪 joint4 轴心位置；q4–q6 跟随相对腕姿 |
-| pose + orientation_scale=0 | 保持激活时 TCP 姿态，仍包含姿态任务 |
+IK 只有 split 一种：q1–q3 跟踪 joint4 轴心位置，q4–q6 跟随相对腕姿。
 
 split 从 URDF FK 推导腕部轴序和符号，不硬编码欧拉轴交换。每个 VR 样本先完成 q1–q3 位置 QP 和 q4–q6 闭式分解，再原子发布六轴结果；腕部超限会裁剪并报告 `wrist_clip_deg`。该模式允许 TCP 随腕部长度产生位置圆弧，也允许肩部转动带动末端朝向。
 

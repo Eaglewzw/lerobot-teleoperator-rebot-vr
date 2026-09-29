@@ -70,8 +70,7 @@ def build_running_status(
             )
         )
         if (
-            config.ik_mode == "split"
-            and ik_result is not None
+            ik_result is not None
             and np.isfinite(ik_result.orientation_error_rad)
         ):
             orientation_error_deg = float(
@@ -115,7 +114,7 @@ def build_running_status(
         target_deg=np.concatenate((target_deg, [gripper.goal_deg])),
         command_deg=np.concatenate((command_deg, [gripper.command_deg])),
         orientation_error_deg=orientation_error_deg,
-        ik_mode=config.ik_mode,
+        ik_mode="split",
         wrist_clip_deg=(
             None
             if ik_result is None or not np.isfinite(ik_result.wrist_clip_rad)

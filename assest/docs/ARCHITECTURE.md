@@ -37,8 +37,7 @@ TCP 默认监听 `0.0.0.0:63901`，主循环默认 90 Hz。
 | `tools/` | VR 打印、夹爪测试等工具 |
 | `urdf/` | 运动学与动力学模型 |
 
-`config/pos_vel.yaml` 和 `config/mit.yaml` 提供保持 pose 行为的兼容默认参数；
-`config/{pos_vel,mit}_{pose,split}.yaml` 提供显式的“电机控制 × IK”完整 profile。
+`config/pos_vel_split.yaml` 和 `config/mit_split.yaml` 是 split IK 的默认完整 profile（IK 只有 split 一种）。
 CLI 显式值优先。Python 导入统一使用 `control/`、`ik/`、`vr/`、`runtime/`、`diagnostics/` 和 `tools/` 下的实际模块；旧模块别名和顶层转发文件已移除。外部脚本需迁移旧导入路径，已安装的正式命令名称不变。
 
 ## 入口

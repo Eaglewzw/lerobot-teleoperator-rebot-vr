@@ -2,7 +2,7 @@
 
 [架构](ARCHITECTURE.md) · [控制流程](CONTROL_DESIGN.md) · [QP](INVERSE_KINEMATICS_DESIGN.md)
 
-兼容默认值来自 [pos_vel.yaml](../../config/pos_vel.yaml) 和 [mit.yaml](../../config/mit.yaml)，两者保持 pose IK。显式组合 profile 见 `config/{pos_vel,mit}_{pose,split}.yaml`。核对日期：2026-09-17。
+默认值来自 [pos_vel_split.yaml](../../config/pos_vel_split.yaml) 和 [mit_split.yaml](../../config/mit_split.yaml)。IK 只有 split 一种（q1–q3 位置 QP + q4–q6 腕部闭式解）。核对日期：2026-09-29。
 
 ## 配置优先级
 
@@ -14,10 +14,6 @@ rebot-vr-teleoperate --motor-control-mode pos_vel
 rebot-vr-teleoperate --motor-control-mode mit
 
 # 指定配置；文件内 motor_control_mode 必须与所选模式一致
-rebot-vr-teleoperate --motor-control-mode mit --control-config config/mit.yaml
-
-# 推荐用完整 profile 切换 IK，不只覆盖 --ik-mode
-rebot-vr-teleoperate --motor-control-mode pos_vel --control-config config/pos_vel_split.yaml
 rebot-vr-teleoperate --motor-control-mode mit --control-config config/mit_split.yaml
 ```
 
@@ -25,17 +21,15 @@ rebot-vr-teleoperate --motor-control-mode mit --control-config config/mit_split.
 
 ## 组合 profile 与参数归属
 
-| 电机控制 | pose QP | split IK |
-|---|---|---|
-| POS_VEL | `pos_vel_pose.yaml` | `pos_vel_split.yaml` |
-| MIT | `mit_pose.yaml` | `mit_split.yaml` |
-
-`pos_vel.yaml` 与 `pos_vel_pose.yaml` 等价，`mit.yaml` 与 `mit_pose.yaml` 等价；前两个短文件名继续作为自动加载默认。完整文件有意保留少量重复，使每次实验只需保存一个 YAML 就能复现，不依赖隐式合并顺序。
+| 电机控制 | 配置（split IK） |
+|---|---|
+| POS_VEL | `pos_vel_split.yaml` |
+| MIT | `mit_split.yaml` |
 
 参数按职责分为三组：
 
-- 电机层：`mit_kp`、`mit_kd`、前馈力矩上限和重力参数。它们不因 pose/split 自动变化。
-- 解算与映射层：滤波、死区、QP 增益/代价、奇异性参数。它们应跟随 IK profile 调整。
+- 电机层：`mit_kp`、`mit_kd`、前馈力矩上限和重力参数。
+- 解算与映射层：滤波、死区、QP 增益/代价、奇异性参数。
 - 安全与下发层：速度、加速度、命令-反馈窗口和前视。profile 可以给出更保守的值，但不能把它们当作硬件安全上限。
 
 split profile 的初始策略是保持已经验证的 MIT 电机层参数，只降低或平滑 IK 目标：
@@ -56,7 +50,7 @@ split profile 的初始策略是保持已经验证的 MIT 电机层参数，只�
 | 参数 | POS_VEL 默认 | MIT 默认 | 含义 |
 |---|---|---|---|
 | `--position-scale` | 1 | 1 | 手柄相对位移倍率 |
-| `--orientation-scale` | 1 | 1 | 手柄相对旋转倍率；设为 0 不等于 position IK |
+| `--orientation-scale` | 1 | 1 | 手柄相对旋转倍率 |
 | `--position-filter-hz` | 0 | 4 | 位置低通截止频率，Hz；0 关闭 |
 | `--orientation-filter-hz` | 0 | 0 | 姿态低通截止频率，Hz；0 关闭 |
 | `--position-deadband-m` | 0 | 0.015 | 位置死区，m |
@@ -76,24 +70,21 @@ split profile 的初始策略是保持已经验证的 MIT 电机层参数，只�
 
 | 参数 | POS_VEL 默认 | MIT 默认 | 含义 |
 |---|---|---|---|
-| `--ik-mode` | pose | pose | pose：TCP 位姿；position：q1–q3 解 TCP 位置并锁腕；split：q1–q3 解 joint4 位置，q4–q6 解相对腕姿 |
 | `--qp-solver` | scipy | scipy | scipy 或 osqp；OSQP 需安装 `.[qp]` |
 | `--qp-position-cost` | 20 | 20 | 位置任务权重 |
-| `--qp-orientation-cost` | 2 | 2 | pose 正常区域姿态任务权重；split 不使用 |
-| `--qp-orientation-cost-min` | 0.05 | 0.05 | pose 奇异区域姿态权重下限；split 不使用 |
 | `--qp-position-gain` | 10 | 4 | 位置误差到目标线速度的增益，1/s |
-| `--qp-orientation-gain` | 8 | 2 | pose：姿态误差增益；split：q4–q6 腕部目标误差增益，1/s |
+| `--qp-orientation-gain` | 8 | 2 | q4–q6 腕部目标误差增益，1/s（名称沿用，split 的腕部增益） |
 | `--qp-damping` | 0.001 | 0.001 | 最小阻尼；别名 `--qp-damping-min` |
 | `--qp-damping-max` | 0.1 | 0.1 | 最大阻尼 |
 | `--qp-smoothness-cost` | 0.05 | 0.05 | 相邻 QP 速度差的代价 |
 | `--qp-posture-cost` | 0.01 | 0.01 | 偏离 nominal 关节姿态的代价 |
 | `--singularity-threshold` | 0.08 | 0.08 | 开始自适应的归一化最小奇异值 |
-| `--singularity-critical-threshold` | 0.02 | 0.02 | 达到最大阻尼、最小姿态权重的阈值 |
+| `--singularity-critical-threshold` | 0.02 | 0.02 | 达到最大阻尼的阈值 |
 | `--singularity-characteristic-length-m` | 0.3 | 0.3 | Jacobian 线速度行归一化长度，m |
 | `--joint-limit-margin-deg` | 2 | 2 | 关节限位内缩余量，deg |
 | `--qp-max-solve-time-ms` | 8 | 8 | 求解时间预算，ms；超时结果不采用 |
 
-要求 `0 ≤ critical < threshold`、`0 ≤ damping_min ≤ damping_max`。SciPy 返回后检查耗时，超时丢弃。split 的 q1–q3 位置 QP 仍使用位置代价、位置增益、阻尼、平滑、关节姿态正则、奇异性阈值与限位余量；q4–q6 闭式分解不使用两个姿态代价参数。当前为保持 CLI 兼容，腕部增益沿用 `qp_orientation_gain` 名称。
+要求 `0 ≤ critical < threshold`、`0 ≤ damping_min ≤ damping_max`。直接求解后检查耗时，超时丢弃。split 的 q1–q3 位置 QP 使用位置代价、位置增益、阻尼、平滑、关节姿态正则、奇异性阈值与限位余量；q4–q6 闭式分解使用 `qp_orientation_gain` 作为腕部误差增益。
 
 ## MIT 参数
 

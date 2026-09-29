@@ -115,6 +115,9 @@ class FakeKinematics:
         q = np.asarray(q_rad, dtype=np.float64)
         return q[:3].copy(), Rotation.from_euler("ZYX", q[3:6]).as_matrix()
 
+    def wrist_anchor_pose(self, q_rad: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        return self.forward_kinematics(q_rad)
+
 
 class ImmediateIKWorker:
     def __init__(self) -> None:
@@ -334,69 +337,6 @@ def test_closed_loop_starts_from_actual_pose_and_atomically_applies_arm_and_wris
         worker.result.joint_velocity_rad_s
     )
     assert status.ik_result_applied_this_cycle
-
-
-def test_position_mode_keeps_grip_capture_wrist_target_when_feedback_moves() -> None:
-    class PositionOnlyWorker(ImmediateIKWorker):
-        def submit(self, request: IKRequest) -> None:
-            self.submitted += 1
-            self.solved += 1
-            self.requests.append(request)
-            q_target = request.q_actual.copy()
-            q_target[0] += 0.05
-            velocity = np.zeros(6, dtype=np.float64)
-            velocity[0] = 0.05 / request.dt
-            self.result = IKResult(
-                generation=request.generation,
-                sequence=request.sequence,
-                sample_id=request.sample_id,
-                q_target_rad=q_target,
-                success=True,
-                position_error_m=0.0,
-                solve_time_ms=0.1,
-                joint_velocity_rad_s=velocity,
-                submitted_monotonic_ns=request.submitted_monotonic_ns,
-            )
-
-    worker = PositionOnlyWorker()
-    controller = FullBodyQPIKController(
-        FakeKinematics(),
-        xr_to_base_rotation=XR_TO_BASE,
-        config=CartesianControlConfig(
-            ik_mode="position",
-            position_filter_hz=0.0,
-            orientation_filter_hz=0.0,
-            position_deadband_m=0.0,
-            orientation_deadband_rad=0.0,
-            stale_timeout_s=1.0,
-            max_joint_speed_rad_s=1000.0,
-            max_joint_acceleration_rad_s2=1000.0,
-        ),
-        ik_worker=worker,
-    )
-    now = time.monotonic_ns()
-    captured_observation = _observation(q_deg=(0.0, -60.0, -70.0, 10.0, 20.0, 30.0))
-    controller.update(_frame(now), captured_observation, 0.02, now_ns=now)
-    controller.update(
-        _frame(now + 20_000_000, grip=1.0),
-        captured_observation,
-        0.02,
-        now_ns=now + 20_000_000,
-    )
-    moved_observation = _observation(q_deg=(0.0, -60.0, -70.0, 15.0, 25.0, 35.0))
-
-    action, status = controller.update(
-        _frame(now + 40_000_000, position=(0.05, 0.0, 0.0), grip=1.0),
-        moved_observation,
-        0.02,
-        now_ns=now + 40_000_000,
-    )
-
-    assert status.ik_success
-    assert status.target_deg[3:6] == pytest.approx([10.0, 20.0, 30.0])
-    assert [action[f"{name}.pos"] for name in ARM_JOINT_NAMES[3:]] == pytest.approx(
-        [10.0, 20.0, 30.0]
-    )
 
 
 def test_completed_qp_is_consumed_before_next_submission_and_keeps_its_own_velocity() -> None:
@@ -870,9 +810,9 @@ def test_wrist_and_gripper_cli_options_defaults_and_positive_validation() -> Non
     assert "--gripper-relative-target-deg" in help_text
 
     defaults = parser.parse_args([])
-    assert defaults.wrist_speed_rad_s == pytest.approx(12.0)
-    assert defaults.wrist_acceleration_rad_s2 == pytest.approx(60.0)
-    assert defaults.wrist_relative_target_deg == pytest.approx(20.0)
+    assert defaults.wrist_speed_rad_s == pytest.approx(4.0)
+    assert defaults.wrist_acceleration_rad_s2 == pytest.approx(15.0)
+    assert defaults.wrist_relative_target_deg == pytest.approx(12.0)
     assert defaults.gripper_relative_target_deg is None
     assert defaults.gripper_open_deg == pytest.approx(-180.0)
     assert defaults.gripper_closed_deg == pytest.approx(0.0)
@@ -893,10 +833,8 @@ def test_adaptive_qp_cli_defaults_modes_and_validation() -> None:
     parser = _parser()
     help_text = parser.format_help()
     for option in (
-        "--ik-mode",
         "--qp-damping-min",
         "--qp-damping-max",
-        "--qp-orientation-cost-min",
         "--singularity-threshold",
         "--singularity-critical-threshold",
         "--singularity-characteristic-length-m",
@@ -909,35 +847,24 @@ def test_adaptive_qp_cli_defaults_modes_and_validation() -> None:
 
     defaults = parser.parse_args([])
     assert defaults.qp_solver == "scipy"
-    assert defaults.ik_mode == "pose"
     assert defaults.position_scale == pytest.approx(1.0)
     assert defaults.orientation_scale == pytest.approx(1.0)
     assert defaults.qp_position_cost == pytest.approx(20.0)
     assert defaults.qp_damping == pytest.approx(1e-3)
     assert defaults.qp_damping_max == pytest.approx(0.1)
-    assert defaults.qp_orientation_cost == pytest.approx(2.0)
-    assert defaults.qp_orientation_cost_min == pytest.approx(0.05)
     assert defaults.singularity_threshold == pytest.approx(0.08)
     assert defaults.singularity_critical_threshold == pytest.approx(0.02)
     assert defaults.singularity_characteristic_length_m == pytest.approx(0.3)
-    assert defaults.qp_position_gain == pytest.approx(10.0)
-    assert defaults.qp_orientation_gain == pytest.approx(8.0)
+    assert defaults.qp_position_gain == pytest.approx(6.0)
+    assert defaults.qp_orientation_gain == pytest.approx(4.0)
     assert defaults.arm_command_lookahead_ms == pytest.approx(50.0)
     assert defaults.wrist_command_lookahead_ms == pytest.approx(25.0)
-    assert defaults.max_joint_speed_rad_s == pytest.approx(5.5)
-    assert defaults.max_joint_acceleration_rad_s2 == pytest.approx(20.0)
-    assert defaults.max_relative_target_deg == pytest.approx(20.0)
+    assert defaults.max_joint_speed_rad_s == pytest.approx(3.0)
+    assert defaults.max_joint_acceleration_rad_s2 == pytest.approx(10.0)
+    assert defaults.max_relative_target_deg == pytest.approx(12.0)
     assert defaults.fps == pytest.approx(90.0)
     assert defaults.status_rate == pytest.approx(5.0)
     _validate_args(defaults)
-
-    position = parser.parse_args(["--ik-mode", "position"])
-    _validate_args(position)
-    assert position.ik_mode == "position"
-
-    split = parser.parse_args(["--ik-mode", "split"])
-    _validate_args(split)
-    assert split.ik_mode == "split"
 
     invalid = parser.parse_args(
         [

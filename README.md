@@ -1,6 +1,6 @@
 # reBot VR Teleoperation
 
-基于 PICO 4 和 LeRobot 的 reBot B601-DM 单／双臂遥操，支持 pose QP、分离式 IK、MIT／POS_VEL 控制和夹爪控制。
+基于 PICO 4 和 LeRobot 的 reBot B601-DM 单／双臂遥操，采用分离式 IK（split IK）、MIT／POS_VEL 控制和夹爪控制。
 
 <p align="center">
   <table>
@@ -133,14 +133,12 @@ rebot-vr-teleoperate \
 
 ## 配置选择
 
-| 电机控制 | pose QP | split IK |
-| --- | --- | --- |
-| MIT | `config/mit_pose.yaml` | `config/mit_split.yaml` |
-| POS_VEL | `config/pos_vel_pose.yaml` | `config/pos_vel_split.yaml` |
+| 电机控制 | 配置（split IK） |
+| --- | --- |
+| MIT | `config/mit_split.yaml` |
+| POS_VEL | `config/pos_vel_split.yaml` |
 
-不指定配置时，按电机模式加载 `mit.yaml` 或 `pos_vel.yaml`，默认使用 pose IK。单臂命令行显式参数优先于 YAML，电机模式须与配置一致。
-
-pose 跟踪 TCP 位姿；split 的 q1–q3 跟踪 joint4 轴心位置，q4–q6 跟随手柄相对旋转。建议选择完整配置，不要只改 `ik_mode`。增益、限速、初始姿态和夹爪参数见 [参数说明](assest/docs/PARAMETERS.md)。
+IK 只有 split 一种：q1–q3 跟踪 joint4 轴心位置，q4–q6 跟随手柄相对旋转。不指定配置时，按电机模式加载 `config/mit_split.yaml` 或 `config/pos_vel_split.yaml`。单臂命令行显式参数优先于 YAML，电机模式须与配置一致。增益、限速、初始姿态和夹爪参数见 [参数说明](assest/docs/PARAMETERS.md)。
 
 ## 日志与测试
 

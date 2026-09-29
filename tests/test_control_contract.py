@@ -221,6 +221,9 @@ class FakeKinematics:
         q = np.asarray(q_rad, dtype=np.float64)
         return q[:3].copy(), Rotation.from_euler("ZYX", q[3:6]).as_matrix()
 
+    def wrist_anchor_pose(self, q_rad):
+        return self.forward_kinematics(q_rad)
+
 
 class ImmediateWorker:
     def __init__(self) -> None:

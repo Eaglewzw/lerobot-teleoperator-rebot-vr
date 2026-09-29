@@ -76,7 +76,7 @@ def test_build_csv_row_flattens_seven_joint_status_and_diagnostics() -> None:
 
     assert tuple(row) == CSV_FIELDNAMES
     assert row["teleop_state"] == "active"
-    assert row["ik_mode"] == "pose"
+    assert row["ik_mode"] == "split"
     assert row["wrist_clip_deg"] == ""
     assert row["ik_success"] is True
     assert row["control_loop_hz"] == pytest.approx(59.9)

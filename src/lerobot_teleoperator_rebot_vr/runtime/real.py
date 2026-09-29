@@ -104,10 +104,7 @@ def _run_arm(args, *, session=None, arm_id=None) -> None:
     )
     control_config = CartesianControlConfig(
         qp_solver=args.qp_solver,
-        ik_mode=args.ik_mode,
         qp_position_cost=args.qp_position_cost,
-        qp_orientation_cost=args.qp_orientation_cost,
-        qp_orientation_cost_min=args.qp_orientation_cost_min,
         qp_position_gain=args.qp_position_gain,
         qp_orientation_gain=args.qp_orientation_gain,
         qp_damping=args.qp_damping,
@@ -231,7 +228,7 @@ def _run_arm(args, *, session=None, arm_id=None) -> None:
                 dtype=np.float64,
             ),
             velocity_aligned_axes=np.array(
-                [True, True, True, *([args.ik_mode != "position"] * 3)],
+                [True, True, True, True, True, True],
                 dtype=bool,
             ),
             joint_limit_margin_rad=np.deg2rad(

@@ -8,7 +8,6 @@ import numpy as np
 from .arm_command import update_arm_position_command
 from ..ik.async_worker import LatestOnlyQPIKWorker
 from ..ik.coordination import QPRequestCoordinator
-from ..ik.kinematics import FullBodyQPIKSolver
 from ..ik.split_solver import SplitIKSolver
 from ..vr.adapter import sample_is_fresh, trigger_value
 from ..vr.models import VRFrame
@@ -79,8 +78,6 @@ class FullBodyQPIKController:
             solver_options = dict(
                 solver=self.config.qp_solver,
                 position_cost=self.config.qp_position_cost,
-                orientation_cost=self.config.qp_orientation_cost,
-                orientation_cost_min=self.config.qp_orientation_cost_min,
                 position_gain=self.config.qp_position_gain,
                 orientation_gain=self.config.qp_orientation_gain,
                 damping_min=self.config.qp_damping,
@@ -99,21 +96,15 @@ class FullBodyQPIKController:
                 joint_lower_limit_rad=self.lower_limit_rad,
                 joint_upper_limit_rad=self.upper_limit_rad,
             )
-            if self.config.ik_mode == "split":
-                qp = SplitIKSolver(kinematics, contour_weight=self.config.split_contour_weight,
-                                   contour_mode=self.config.split_contour_mode,
-                                   contour_speed_gate=self.config.split_contour_speed_gate,
-                                   contour_gate_engage_m_s=self.config.contour_gate_engage_m_s,
-                                   contour_gate_full_m_s=self.config.contour_gate_full_m_s,
-                                   contour_gate_hold_s=self.config.contour_gate_hold_s,
-                                   contour_gate_release_s=self.config.contour_gate_release_s,
-                                   **solver_options)
-            else:
-                qp = FullBodyQPIKSolver(
-                    kinematics,
-                    ik_mode=self.config.ik_mode,
-                    **solver_options,
-                )
+            # Split IK is the only solver: q1-q3 position QP + closed-form wrist.
+            qp = SplitIKSolver(kinematics, contour_weight=self.config.split_contour_weight,
+                               contour_mode=self.config.split_contour_mode,
+                               contour_speed_gate=self.config.split_contour_speed_gate,
+                               contour_gate_engage_m_s=self.config.contour_gate_engage_m_s,
+                               contour_gate_full_m_s=self.config.contour_gate_full_m_s,
+                               contour_gate_hold_s=self.config.contour_gate_hold_s,
+                               contour_gate_release_s=self.config.contour_gate_release_s,
+                               **solver_options)
             speed = np.concatenate(
                 (
                     np.full(3, self.config.max_joint_speed_rad_s),
@@ -230,14 +221,14 @@ class FullBodyQPIKController:
         dt_s = float(np.clip(dt_s, 1e-6, 0.05))
 
         fk_started_ns = time.monotonic_ns()
-        tcp_position, ee_rotation = self.kinematics.forward_kinematics(
+        # Split IK controls the joint4-axis (wrist anchor) point; the wrist
+        # orientation is tracked separately in closed form.
+        mapping_position, _ = self.kinematics.wrist_anchor_pose(
             q_control_actual_rad
         )
-        mapping_position = tcp_position
-        if self.config.ik_mode == "split":
-            mapping_position, _ = self.kinematics.wrist_anchor_pose(
-                q_control_actual_rad
-            )
+        _, ee_rotation = self.kinematics.forward_kinematics(
+            q_control_actual_rad
+        )
         fk_finished_ns = time.monotonic_ns()
         now_value_ns = time.monotonic_ns() if now_ns is None else int(now_ns)
 
@@ -320,10 +311,7 @@ class FullBodyQPIKController:
             now_ns=qp_boundary_ns(),
         )
         if qp_goal_rad is not None:
-            if self.config.ik_mode == "position":
-                self._q_goal_rad[:3] = qp_goal_rad[:3]
-            else:
-                self._q_goal_rad = qp_goal_rad
+            self._q_goal_rad = qp_goal_rad
 
         if (
             mapping.state is TeleopState.ACTIVE
@@ -353,10 +341,7 @@ class FullBodyQPIKController:
                     now_ns=qp_boundary_ns(),
                 )
                 if qp_goal_rad is not None:
-                    if self.config.ik_mode == "position":
-                        self._q_goal_rad[:3] = qp_goal_rad[:3]
-                    else:
-                        self._q_goal_rad = qp_goal_rad
+                    self._q_goal_rad = qp_goal_rad
         qp_coordination_finished_ns = time.monotonic_ns()
 
         command_shaping_started_ns = time.monotonic_ns()

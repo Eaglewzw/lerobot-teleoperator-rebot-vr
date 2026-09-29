@@ -11,7 +11,6 @@ from pathlib import Path
 
 import numpy as np
 from scipy.spatial.transform import Rotation
-from scipy.optimize import minimize
 
 from ..control.joint_command import braking_velocity_bounds
 from .box_qp import solve_box_qp3
@@ -42,12 +41,11 @@ class FullBodyQPIKSolver:
     """Convex differential TCP IK with box constraints on joint velocity."""
 
     def __init__(self, kinematics: "B601Kinematics", *, solver: str = "scipy", position_cost: float = 20.0,
-                 orientation_cost: float = 2.0, orientation_cost_min: float = 0.05,
-                 position_gain: float = 10.0, orientation_gain: float = 8.0,
+                 position_gain: float = 10.0,
                  damping_min: float = 1e-3, damping_max: float = 0.1,
                  smoothness_cost: float = 0.05, posture_cost: float = 0.01,
                  joint_limit_margin_rad: float = 0.03, max_solve_time_ms: float = 8.0,
-                 ik_mode: str = "pose", singularity_threshold: float = 0.08,
+                 singularity_threshold: float = 0.08,
                  singularity_critical_threshold: float = 0.02,
                  singularity_characteristic_length_m: float = 0.3,
                  joint_lower_limit_rad: object | None = None,
@@ -88,12 +86,8 @@ class FullBodyQPIKSolver:
         self.solver = str(solver).lower()
         if self.solver not in ("scipy", "osqp"):
             raise ValueError("qp solver must be scipy or osqp")
-        self.ik_mode = str(ik_mode).lower()
-        if self.ik_mode not in ("pose", "position"):
-            raise ValueError("ik_mode must be pose or position")
         values = (
-            position_cost, orientation_cost, orientation_cost_min,
-            position_gain, orientation_gain,
+            position_cost, position_gain,
             damping_min, damping_max, smoothness_cost, posture_cost,
             joint_limit_margin_rad, max_solve_time_ms, singularity_threshold,
             singularity_critical_threshold, singularity_characteristic_length_m,
@@ -101,11 +95,7 @@ class FullBodyQPIKSolver:
         if (
             not np.all(np.isfinite(values))
             or position_cost <= 0
-            or orientation_cost < 0
-            or orientation_cost_min < 0
             or position_gain <= 0
-            or orientation_gain <= 0
-            or (orientation_cost > 0 and orientation_cost_min > orientation_cost)
             or damping_min < 0
             or damping_max < damping_min
             or smoothness_cost < 0
@@ -118,12 +108,7 @@ class FullBodyQPIKSolver:
         ):
             raise ValueError("invalid QP parameters")
         self.position_cost = float(position_cost)
-        self.orientation_cost = float(orientation_cost)
-        self.orientation_cost_min = min(
-            float(orientation_cost_min), self.orientation_cost
-        )
         self.position_gain = float(position_gain)
-        self.orientation_gain = float(orientation_gain)
         self.damping_min = float(damping_min)
         self.damping_max = float(damping_max)
         self.smoothness_cost = float(smoothness_cost)
@@ -179,19 +164,13 @@ class FullBodyQPIKSolver:
             else target_linear_velocity_m_s,
             dtype=np.float64,
         )
-        angular_feedforward = np.asarray(
-            np.zeros(3)
-            if target_angular_velocity_rad_s is None
-            else target_angular_velocity_rad_s,
-            dtype=np.float64,
-        )
+        # target_angular_velocity_rad_s is accepted for interface compatibility
+        # but unused: the wrist orientation is solved separately (split IK).
         if any(v.shape != (6,) for v in (q, dq_prev, q_nom, speed, accel)) or not all(np.all(np.isfinite(v)) for v in (q, dq_prev, q_nom, speed, accel)):
             return self._failure(started, "invalid_input")
         if (
             linear_feedforward.shape != (3,)
-            or angular_feedforward.shape != (3,)
             or not np.all(np.isfinite(linear_feedforward))
-            or not np.all(np.isfinite(angular_feedforward))
         ):
             return self._failure(started, "invalid_target_velocity")
         dt = float(dt)
@@ -212,8 +191,9 @@ class FullBodyQPIKSolver:
         # envelope; clipping it to acceleration*dt would silently reduce the
         # reachable speed to roughly 2*acceleration*dt.
         dq_constraint_prev = np.clip(dq_prev, -speed, speed)
-        if self.ik_mode == "position":
-            dq_constraint_prev[3:] = 0.0
+        # Position-only mode: the wrist joints are handled separately (split IK
+        # closed form), so the QP locks their velocity to zero.
+        dq_constraint_prev[3:] = 0.0
         braking_lo, braking_hi = braking_velocity_bounds(
             q, safe_lo, safe_hi, accel, reaction_time_s=dt
         )
@@ -233,9 +213,8 @@ class FullBodyQPIKSolver:
                 braking_hi,
             )
         )
-        if self.ik_mode == "position":
-            lo[3:] = 0.0
-            hi[3:] = 0.0
+        lo[3:] = 0.0
+        hi[3:] = 0.0
         if np.any(lo > hi + 1e-10):
             return self._failure(started, "infeasible_constraints")
         try:
@@ -279,16 +258,6 @@ class FullBodyQPIKSolver:
                     weight @ task_velocity
                 )
             ]
-            if self.ik_mode == "pose" and orientation_weight > 0.0:
-                wo = np.sqrt(orientation_weight)
-                task_matrices.append(wo * jac[3:])
-                task_targets.append(
-                    wo
-                    * (
-                        angular_feedforward
-                        + self.orientation_gain * error[3:]
-                    )
-                )
             A = np.vstack(
                 (
                     *task_matrices,
@@ -319,20 +288,12 @@ class FullBodyQPIKSolver:
                 ok = result.info.status.lower().startswith("solved")
             else:
                 deadline = started + int(self.max_solve_time_ms * 1e6)
-                if self.ik_mode == "position":
-                    # Wrist velocities are fixed to zero above. Solve the same
-                    # strictly convex objective on its three free coordinates,
-                    # avoiding iterative optimizer overhead on each arm.
-                    dq = np.zeros(6)
-                    dq[:3] = solve_box_qp3(H[:3, :3], g[:3], lo[:3], hi[:3])
-                    ok = True
-                else:
-                    def fun(x): return 0.5 * float(x @ H @ x) + float(g @ x)
-                    def jac_fun(x): return H @ x + g
-                    result = minimize(fun, x0, jac=jac_fun, bounds=list(zip(lo, hi)), method="L-BFGS-B",
-                                      options={"maxiter": 40, "ftol": 1e-10, "gtol": 1e-7, "maxls": 10})
-                    dq = np.asarray(result.x if result.x is not None else x0, dtype=np.float64)
-                    ok = bool(result.success) or np.linalg.norm(jac_fun(dq), np.inf) < 1e-4
+                # Wrist velocities are fixed to zero above. Solve the same
+                # strictly convex objective on its three free coordinates,
+                # avoiding iterative optimizer overhead on each arm.
+                dq = np.zeros(6)
+                dq[:3] = solve_box_qp3(H[:3, :3], g[:3], lo[:3], hi[:3])
+                ok = True
                 if time.monotonic_ns() > deadline:
                     return self._failure(
                         started,
@@ -413,11 +374,8 @@ class FullBodyQPIKSolver:
         position_rows = (
             jacobian[:3] / self.singularity_characteristic_length_m
         )
-        task_jacobian = (
-            np.vstack((position_rows, jacobian[3:]))
-            if self.ik_mode == "pose"
-            else position_rows[:, :3]
-        )
+        # Position-only task: the three free arm joints (wrist handled separately).
+        task_jacobian = position_rows[:, :3]
         singular_values = np.linalg.svd(task_jacobian, compute_uv=False)
         sigma_min = float(singular_values[-1])
         condition_number = (
@@ -428,7 +386,7 @@ class FullBodyQPIKSolver:
         return sigma_min, condition_number
 
     def _adaptive_weights(self, sigma_min: float) -> tuple[float, float]:
-        """C1-continuous damping increase and orientation relaxation."""
+        """C1-continuous damping increase; orientation weight is unused (0)."""
         interval = self.singularity_threshold - self.singularity_critical_threshold
         normalized = np.clip(
             (sigma_min - self.singularity_critical_threshold) / interval,
@@ -439,13 +397,7 @@ class FullBodyQPIKSolver:
         damping = self.damping_max + healthy * (
             self.damping_min - self.damping_max
         )
-        orientation_weight = (
-            0.0
-            if self.ik_mode == "position"
-            else self.orientation_cost_min
-            + healthy * (self.orientation_cost - self.orientation_cost_min)
-        )
-        return float(damping), float(orientation_weight)
+        return float(damping), 0.0
 
     @staticmethod
     def _failure(

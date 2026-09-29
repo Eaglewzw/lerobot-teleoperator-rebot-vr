@@ -40,10 +40,7 @@ class IKWorker(Protocol):
 @dataclass(frozen=True)
 class CartesianControlConfig:
     qp_solver: str = "scipy"
-    ik_mode: str = "pose"
     qp_position_cost: float = 20.0
-    qp_orientation_cost: float = 2.0
-    qp_orientation_cost_min: float = 0.05
     qp_position_gain: float = 10.0
     qp_orientation_gain: float = 8.0
     qp_damping: float = 1e-3
@@ -115,8 +112,6 @@ class CartesianControlConfig:
                 self.position_deadband_m,
                 self.orientation_deadband_rad,
                 self.qp_position_cost,
-                self.qp_orientation_cost,
-                self.qp_orientation_cost_min,
                 self.qp_damping,
                 self.qp_damping_max,
                 self.qp_smoothness_cost,
@@ -196,13 +191,6 @@ class CartesianControlConfig:
             optional_positive <= 0.0
         ):
             raise ValueError("wrist and gripper control limits must be finite and positive")
-        if self.ik_mode not in ("pose", "position", "split"):
-            raise ValueError("ik_mode must be pose, position, or split")
-        if (
-            self.qp_orientation_cost > 0
-            and self.qp_orientation_cost_min > self.qp_orientation_cost
-        ):
-            raise ValueError("minimum orientation cost cannot exceed normal cost")
         if self.qp_damping_max < self.qp_damping:
             raise ValueError("maximum QP damping cannot be below minimum damping")
         if self.singularity_threshold <= self.singularity_critical_threshold:
@@ -254,7 +242,7 @@ class CartesianControlStatus:
     target_deg: np.ndarray
     command_deg: np.ndarray
     orientation_error_deg: float | None
-    ik_mode: str = "pose"
+    ik_mode: str = "split"
     wrist_clip_deg: float | None = None
     sigma_min: float | None = None
     condition_number: float | None = None

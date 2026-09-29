@@ -374,15 +374,15 @@ def test_mit_cli_defaults_to_pos_vel_and_validates_protocol_ranges() -> None:
     mit_defaults = parser.parse_args(["--motor-control-mode", "mit"])
 
     assert defaults.motor_control_mode == "pos_vel"
-    assert mit_defaults.mit_kp == pytest.approx([25.0, 30.0, 30.0, 10.0, 10.0, 10.0])
-    assert mit_defaults.mit_kd == pytest.approx([5.0, 5.0, 4.0, 0.5, 0.5, 0.5])
+    assert mit_defaults.mit_kp == pytest.approx([25.0, 30.0, 30.0, 25.0, 25.0, 25.0])
+    assert mit_defaults.mit_kd == pytest.approx([4.0, 4.0, 4.0, 0.5, 0.5, 0.5])
     assert mit_defaults.mit_torque_limit_nm == pytest.approx(
         [27.0, 27.0, 27.0, 7.0, 7.0, 7.0]
     )
     assert mit_defaults.mit_gravity_scale == pytest.approx(1.0)
     assert mit_defaults.mit_gravity_ramp_s == pytest.approx(1.5)
-    assert mit_defaults.gripper_mit_kp == pytest.approx(8.0)
-    assert mit_defaults.gripper_mit_kd == pytest.approx(0.3)
+    assert mit_defaults.gripper_mit_kp == pytest.approx(15.0)
+    assert mit_defaults.gripper_mit_kd == pytest.approx(0.4)
     validate_args(defaults)
     validate_args(mit_defaults)
 
