@@ -360,6 +360,67 @@ def test_left_and_right_controller_state_and_gripper_are_independent():
     assert controllers["left"].worker is not controllers["right"].worker
 
 
+def test_startup_wait_holds_fast_arm_until_peer_connected(config_file):
+    config = load_dual_config(config_file[0])
+    session = DualArmSession(config)
+    held_twice = threading.Event()
+    released = threading.Event()
+    holds = []
+    results = []
+    def hold():
+        holds.append(1)
+        if len(holds) >= 2:
+            held_twice.set()
+    def left():
+        results.append(session.wait_for_startup('left', hold))
+        released.set()
+    thread = threading.Thread(target=left)
+    thread.start()
+    try:
+        assert held_twice.wait(1.)
+        assert not released.is_set()
+        assert session.wait_for_startup('right', lambda: None)
+        assert released.wait(1.)
+        assert results == [True]
+    finally:
+        session.request_stop()
+        thread.join(timeout=1.)
+        assert not thread.is_alive()
+
+
+@pytest.mark.parametrize('signal_number', [signal.SIGINT, signal.SIGTERM, None])
+def test_startup_wait_is_cancelled_when_peer_fails_or_user_stops(config_file, signal_number):
+    session = DualArmSession(load_dual_config(config_file[0]))
+    held = threading.Event()
+    results = []
+    thread = threading.Thread(target=lambda: results.append(
+        session.wait_for_startup('left', held.set)))
+    thread.start()
+    try:
+        assert held.wait(1.)
+        if signal_number is None:
+            session.request_stop()
+        else:
+            session.handle_signal(signal_number)
+        thread.join(timeout=1.)
+        assert not thread.is_alive()
+        assert results == [False]
+        assert not session.wait_for_startup('right', lambda: pytest.fail('hold after stop'))
+    finally:
+        session.request_stop()
+        thread.join(timeout=1.)
+
+
+def test_startup_wait_timeout_stops_both(config_file):
+    config = load_dual_config(config_file[0])
+    config.arms['left'].initial_move_timeout = .02
+    session = DualArmSession(config)
+    with pytest.raises(RuntimeError, match='waiting for both arms'):
+        session.wait_for_startup('left', lambda: None)
+    assert session.should_stop()
+    assert not session.wait_for_startup('right', lambda: pytest.fail('hold after timeout'))
+
+
 @pytest.mark.parametrize("failure", ["startup", "runtime", "none"])
 def test_session_cleans_both_workers_and_one_shared_source(config_file, failure):
     path, _ = config_file

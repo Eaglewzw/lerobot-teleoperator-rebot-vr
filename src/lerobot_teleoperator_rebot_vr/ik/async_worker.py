@@ -176,6 +176,9 @@ class LatestOnlyQPIKWorker:
         with self._condition:
             self._pending = None
             self._latest_result = None
+        reset = getattr(self.solver, "reset_transient_state", None)
+        if reset is not None:
+            reset()
 
     def submit(self, request: IKRequest) -> None:
         with self._condition:

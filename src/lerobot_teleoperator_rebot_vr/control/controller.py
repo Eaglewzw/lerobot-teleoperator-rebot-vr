@@ -101,6 +101,12 @@ class FullBodyQPIKController:
             )
             if self.config.ik_mode == "split":
                 qp = SplitIKSolver(kinematics, contour_weight=self.config.split_contour_weight,
+                                   contour_mode=self.config.split_contour_mode,
+                                   contour_speed_gate=self.config.split_contour_speed_gate,
+                                   contour_gate_engage_m_s=self.config.contour_gate_engage_m_s,
+                                   contour_gate_full_m_s=self.config.contour_gate_full_m_s,
+                                   contour_gate_hold_s=self.config.contour_gate_hold_s,
+                                   contour_gate_release_s=self.config.contour_gate_release_s,
                                    **solver_options)
             else:
                 qp = FullBodyQPIKSolver(

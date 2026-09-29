@@ -14,6 +14,7 @@ from scipy.spatial.transform import Rotation
 from scipy.optimize import minimize
 
 from ..control.joint_command import braking_velocity_bounds
+from .box_qp import solve_box_qp3
 
 
 NUM_ARM_JOINTS = 6
@@ -51,10 +52,38 @@ class FullBodyQPIKSolver:
                  singularity_characteristic_length_m: float = 0.3,
                  joint_lower_limit_rad: object | None = None,
                  joint_upper_limit_rad: object | None = None,
-                 position_contour_weight: float = 1.0) -> None:
+                 position_contour_weight: float = 1.0,
+                 position_contour_mode: str = "motion",
+                 contour_speed_gate: bool = False,
+                 contour_gate_engage_m_s: float = 0.10,
+                 contour_gate_full_m_s: float = 0.25,
+                 contour_gate_hold_s: float = 0.35,
+                 contour_gate_release_s: float = 0.25) -> None:
         if not np.isfinite(position_contour_weight) or position_contour_weight < 1:
             raise ValueError("position_contour_weight must be finite and >= 1")
         self.position_contour_weight = float(position_contour_weight)
+        if position_contour_mode not in ("motion", "shoulder_lateral"):
+            raise ValueError("invalid position contour mode")
+        self.position_contour_mode = position_contour_mode
+        gate_values = (
+            contour_gate_engage_m_s, contour_gate_full_m_s,
+            contour_gate_hold_s, contour_gate_release_s,
+        )
+        if (
+            not np.all(np.isfinite(gate_values))
+            or contour_gate_engage_m_s < 0
+            or contour_gate_full_m_s <= contour_gate_engage_m_s
+            or contour_gate_hold_s < 0
+            or contour_gate_release_s <= 0
+        ):
+            raise ValueError("invalid contour speed gate parameters")
+        self.contour_speed_gate = bool(contour_speed_gate)
+        self.contour_gate_engage_m_s = float(contour_gate_engage_m_s)
+        self.contour_gate_full_m_s = float(contour_gate_full_m_s)
+        self.contour_gate_hold_s = float(contour_gate_hold_s)
+        self.contour_gate_release_s = float(contour_gate_release_s)
+        self._contour_gate_level = 0.0
+        self._contour_gate_hold_s = 0.0
         self.kinematics = kinematics
         self.solver = str(solver).lower()
         if self.solver not in ("scipy", "osqp"):
@@ -216,11 +245,12 @@ class FullBodyQPIKSolver:
             damping, orientation_weight = self._adaptive_weights(sigma_min)
             wp = np.sqrt(self.position_cost)
             task_velocity = linear_feedforward + self.position_gain * error[:3]
+            contour_weight = self._effective_contour_weight(linear_feedforward, dt)
             # Penalize transverse task-velocity error without locking any joint
             # or world axis. At rest use the correction direction; the projector
             # is sign-invariant across reversals. This is a soft, feasible cost.
             weight = np.eye(3)
-            if self.position_contour_weight > 1:
+            if contour_weight > 1:
                 def projector(vector, epsilon):
                     squared = float(vector @ vector)
                     return (squared*np.eye(3) - np.outer(vector, vector)) / (squared + epsilon**2)
@@ -230,7 +260,18 @@ class FullBodyQPIKSolver:
                 blend = ff_squared / (ff_squared + .01**2)
                 transverse = (blend * projector(linear_feedforward, 1e-6)
                               + (1-blend) * projector(task_velocity, .001))
-                weight += (np.sqrt(self.position_contour_weight) - 1) * transverse
+                if self.position_contour_mode == "shoulder_lateral":
+                    # Penalize only sideways error around the shoulder axis,
+                    # perpendicular to requested motion. The vertical task
+                    # keeps its original weight; lateral requests remain valid.
+                    axis = jac[3:, 0]
+                    axis = axis / max(float(np.linalg.norm(axis)), 1e-12)
+                    def lateral(vector, epsilon):
+                        normal = np.cross(axis, vector)
+                        return np.outer(normal, normal) / (float(normal @ normal) + epsilon**2)
+                    transverse = (blend * lateral(linear_feedforward, 1e-6)
+                                  + (1-blend) * lateral(task_velocity, .001))
+                weight += (np.sqrt(contour_weight) - 1) * transverse
             task_matrices = [wp * weight @ jac[:3]]
             task_targets = [
                 wp
@@ -278,12 +319,20 @@ class FullBodyQPIKSolver:
                 ok = result.info.status.lower().startswith("solved")
             else:
                 deadline = started + int(self.max_solve_time_ms * 1e6)
-                def fun(x): return 0.5 * float(x @ H @ x) + float(g @ x)
-                def jac_fun(x): return H @ x + g
-                result = minimize(fun, x0, jac=jac_fun, bounds=list(zip(lo, hi)), method="L-BFGS-B",
-                                  options={"maxiter": 40, "ftol": 1e-10, "gtol": 1e-7, "maxls": 10})
-                dq = np.asarray(result.x if result.x is not None else x0, dtype=np.float64)
-                ok = bool(result.success) or np.linalg.norm(jac_fun(dq), np.inf) < 1e-4
+                if self.ik_mode == "position":
+                    # Wrist velocities are fixed to zero above. Solve the same
+                    # strictly convex objective on its three free coordinates,
+                    # avoiding iterative optimizer overhead on each arm.
+                    dq = np.zeros(6)
+                    dq[:3] = solve_box_qp3(H[:3, :3], g[:3], lo[:3], hi[:3])
+                    ok = True
+                else:
+                    def fun(x): return 0.5 * float(x @ H @ x) + float(g @ x)
+                    def jac_fun(x): return H @ x + g
+                    result = minimize(fun, x0, jac=jac_fun, bounds=list(zip(lo, hi)), method="L-BFGS-B",
+                                      options={"maxiter": 40, "ftol": 1e-10, "gtol": 1e-7, "maxls": 10})
+                    dq = np.asarray(result.x if result.x is not None else x0, dtype=np.float64)
+                    ok = bool(result.success) or np.linalg.norm(jac_fun(dq), np.inf) < 1e-4
                 if time.monotonic_ns() > deadline:
                     return self._failure(
                         started,
@@ -323,6 +372,41 @@ class FullBodyQPIKSolver:
             )
         except Exception as exc:
             return self._failure(started, f"solver_exception:{type(exc).__name__}")
+
+    def reset_transient_state(self) -> None:
+        """Drop the speed-gate memory so HOLD/re-engagement starts unweighted."""
+        self._contour_gate_level = 0.0
+        self._contour_gate_hold_s = 0.0
+
+    def _effective_contour_weight(self, linear_feedforward: np.ndarray, dt: float) -> float:
+        """Speed-gated contour weight: engage on fast input, hold through braking.
+
+        The gate rises with a smoothstep of the Cartesian feedforward speed
+        between the engage and full thresholds. Once engaged it holds the level
+        for contour_gate_hold_s so the penalty survives the braking phase where
+        the feedforward has already returned to zero, then releases linearly
+        over contour_gate_release_s. Without the gate the configured weight is
+        applied constantly.
+        """
+        maximum = self.position_contour_weight
+        if not self.contour_speed_gate or maximum <= 1.0:
+            return maximum
+        speed = float(np.linalg.norm(linear_feedforward))
+        span = self.contour_gate_full_m_s - self.contour_gate_engage_m_s
+        u = float(np.clip((speed - self.contour_gate_engage_m_s) / span, 0.0, 1.0))
+        desired = u * u * (3.0 - 2.0 * u)
+        step = float(np.clip(dt, 0.0, 0.05))
+        if desired >= self._contour_gate_level:
+            self._contour_gate_level = desired
+            self._contour_gate_hold_s = self.contour_gate_hold_s
+        elif self._contour_gate_hold_s > 0.0:
+            self._contour_gate_hold_s = max(0.0, self._contour_gate_hold_s - step)
+        else:
+            self._contour_gate_level = max(
+                desired,
+                self._contour_gate_level - step / self.contour_gate_release_s,
+            )
+        return 1.0 + (maximum - 1.0) * self._contour_gate_level
 
     def _singularity_metrics(self, jacobian: np.ndarray) -> tuple[float, float]:
         """Return dimensionless task-Jacobian sigma_min and condition number."""

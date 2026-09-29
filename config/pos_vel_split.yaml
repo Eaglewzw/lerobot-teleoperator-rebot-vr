@@ -33,8 +33,10 @@ cartesian_mapping:
 
 # split 逆运动学
 qp_ik:
+  split_contour_mode: motion  # shoulder_lateral weights sideways error only.
   qp_use_sent_velocity: false  # Experimental; combined real-motion trial failed.
   split_contour_weight: 1.0  # 1: original isotropic task; >1 penalizes transverse error.
+  split_contour_speed_gate: false  # true: apply the contour weight only at high Cartesian speed.
   split_reference_speed_m_s: 0.0  # 0: disabled; governs position and velocity together.
   split_reference_acceleration_m_s2: 1.5
   qp_solver: scipy  # scipy | osqp；仅用于 q1-q3 位置 QP

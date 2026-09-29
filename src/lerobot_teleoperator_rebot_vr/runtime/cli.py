@@ -251,6 +251,13 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
     ik.add_argument("--qp-use-sent-velocity", action=argparse.BooleanOptionalAction,
                     default=False, help="Experimental MIT sent-velocity constraint reference")
     ik.add_argument("--split-contour-weight", type=float, default=1.0)
+    ik.add_argument("--split-contour-mode", choices=("motion", "shoulder_lateral"), default="motion")
+    ik.add_argument("--split-contour-speed-gate", action=argparse.BooleanOptionalAction,
+                    default=False, help="Apply the split contour weight only at high Cartesian speed")
+    ik.add_argument("--mit-q1-reference-error-deg", type=float, default=0.0,
+                    help="Bounded q1 position-reference error in MIT split mode; 0 disables it, max 2 degrees")
+    ik.add_argument("--mit-arm-reference-error-deg", type=float, default=0.0,
+                    help="Bounded q1-q3 position-reference error in MIT split mode; 0 disables it, max 3 degrees")
     ik.add_argument("--split-reference-speed-m-s", type=float, default=0.0,
                     help="Split IK reference governor speed; 0 disables it")
     ik.add_argument("--split-reference-acceleration-m-s2", type=float, default=1.5)
@@ -472,6 +479,16 @@ def validate_args(args: argparse.Namespace) -> None:
 
     if args.split_contour_weight < 1:
         raise ValueError("split-contour-weight must be >= 1")
+    if not np.isfinite(args.mit_q1_reference_error_deg) or not 0 <= args.mit_q1_reference_error_deg <= 2:
+        raise ValueError("mit-q1-reference-error-deg must be finite and within [0, 2]")
+    if args.mit_q1_reference_error_deg and (args.motor_control_mode != "mit" or args.ik_mode != "split"):
+        raise ValueError("q1 reference requires MIT split mode")
+    if not np.isfinite(args.mit_arm_reference_error_deg) or not 0 <= args.mit_arm_reference_error_deg <= 3:
+        raise ValueError("mit-arm-reference-error-deg must be finite and within [0, 3]")
+    if args.mit_arm_reference_error_deg and (args.motor_control_mode != "mit" or args.ik_mode != "split"):
+        raise ValueError("arm reference requires MIT split mode")
+    if args.mit_arm_reference_error_deg and args.mit_q1_reference_error_deg:
+        raise ValueError("arm reference and q1 reference are mutually exclusive")
     if args.duration < 0.0:
         raise ValueError("duration must be non-negative")
 

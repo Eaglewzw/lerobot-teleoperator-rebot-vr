@@ -52,6 +52,12 @@ class CartesianControlConfig:
     qp_posture_cost: float = 0.01
     qp_use_sent_velocity: bool = False
     split_contour_weight: float = 1.0
+    split_contour_mode: str = "motion"
+    split_contour_speed_gate: bool = False
+    contour_gate_engage_m_s: float = 0.10
+    contour_gate_full_m_s: float = 0.25
+    contour_gate_hold_s: float = 0.35
+    contour_gate_release_s: float = 0.25
     split_reference_speed_m_s: float = 0.0
     split_reference_acceleration_m_s2: float = 1.5
     singularity_threshold: float = 0.08
@@ -155,6 +161,24 @@ class CartesianControlConfig:
             raise ValueError("QP position cost must be finite and positive")
         if self.split_contour_weight < 1:
             raise ValueError("split_contour_weight must be at least 1")
+        if self.split_contour_mode not in ("motion", "shoulder_lateral"):
+            raise ValueError("invalid split contour mode")
+        gate_values = np.asarray(
+            (
+                self.contour_gate_engage_m_s,
+                self.contour_gate_full_m_s,
+                self.contour_gate_hold_s,
+                self.contour_gate_release_s,
+            )
+        )
+        if (
+            not np.all(np.isfinite(gate_values))
+            or self.contour_gate_engage_m_s < 0
+            or self.contour_gate_full_m_s <= self.contour_gate_engage_m_s
+            or self.contour_gate_hold_s < 0
+            or self.contour_gate_release_s <= 0
+        ):
+            raise ValueError("invalid contour speed gate parameters")
         optional_positive = np.asarray(
             tuple(
                 value

@@ -15,6 +15,7 @@ from ..control.controller import (
     FullBodyQPIKController,
 )
 from ..control.mit import MITCommandDispatcher
+from ..control.feedback import read_robot_feedback
 from ..config_rebot_vr import DEFAULT_BASE_T_ANCHOR, RebotVRConfig
 from ..control.types import ARM_JOINT_NAMES, CartesianControlConfig
 from ..diagnostics.logger import CSVLogger, build_csv_row
@@ -115,6 +116,8 @@ def _run_arm(args, *, session=None, arm_id=None) -> None:
         qp_posture_cost=args.qp_posture_cost,
         qp_use_sent_velocity=(args.qp_use_sent_velocity and args.motor_control_mode == "mit"),
         split_contour_weight=args.split_contour_weight,
+        split_contour_mode=args.split_contour_mode,
+        split_contour_speed_gate=args.split_contour_speed_gate,
         split_reference_speed_m_s=args.split_reference_speed_m_s,
         split_reference_acceleration_m_s2=args.split_reference_acceleration_m_s2,
         singularity_threshold=args.singularity_threshold,
@@ -203,6 +206,8 @@ def _run_arm(args, *, session=None, arm_id=None) -> None:
             robot,
             kp=np.asarray(args.mit_kp, dtype=np.float64),
             kd=np.asarray(args.mit_kd, dtype=np.float64),
+            q1_reference_error_deg=args.mit_q1_reference_error_deg,
+            arm_reference_error_deg=args.mit_arm_reference_error_deg,
             torque_limit_nm=np.asarray(args.mit_torque_limit_nm, dtype=np.float64),
             arm_velocity_limit_rad_s=np.array(
                 [
@@ -324,6 +329,26 @@ def _run_arm(args, *, session=None, arm_id=None) -> None:
         vr_connected = True
         robot_io.connect(calibrate=not args.no_calibrate)
         robot_connected = True
+        if session is not None:
+            startup_hold_action = None
+
+            def hold_during_startup_wait():
+                nonlocal startup_hold_action
+                observation = robot_io.get_observation()
+                q, gripper, error = read_robot_feedback(observation)
+                if error:
+                    raise RuntimeError(f"{arm_id}: invalid startup-wait feedback: {error}")
+                if startup_hold_action is None:
+                    startup_hold_action = {
+                        f"{name}.pos": float(np.rad2deg(q[index]))
+                        for index, name in enumerate(ARM_JOINT_NAMES)
+                    }
+                    startup_hold_action["gripper.pos"] = gripper
+                if not stop and not session.should_stop():
+                    robot_io.send_action(startup_hold_action)
+
+            if not session.wait_for_startup(arm_id, hold_during_startup_wait):
+                return
         if args.move_to_initial:
             assert initial_target_rad is not None
             print(f"Initial feedback request cap: {args.initial_feedback_request_hz:g} Hz per motor "

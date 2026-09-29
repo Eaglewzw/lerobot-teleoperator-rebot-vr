@@ -55,6 +55,12 @@ class SplitIKSolver:
         *,
         solver: str = "scipy",
         contour_weight: float = 1.0,
+        contour_mode: str = "motion",
+        contour_speed_gate: bool = False,
+        contour_gate_engage_m_s: float = 0.10,
+        contour_gate_full_m_s: float = 0.25,
+        contour_gate_hold_s: float = 0.35,
+        contour_gate_release_s: float = 0.25,
         position_cost: float = 20.0,
         orientation_cost: float = 2.0,
         orientation_cost_min: float = 0.05,
@@ -80,6 +86,12 @@ class SplitIKSolver:
             _WristAnchorKinematics(kinematics),
             solver=solver,
             position_contour_weight=contour_weight,
+            position_contour_mode=contour_mode,
+            contour_speed_gate=contour_speed_gate,
+            contour_gate_engage_m_s=contour_gate_engage_m_s,
+            contour_gate_full_m_s=contour_gate_full_m_s,
+            contour_gate_hold_s=contour_gate_hold_s,
+            contour_gate_release_s=contour_gate_release_s,
             ik_mode="position",
             position_cost=position_cost,
             orientation_cost=orientation_cost,
@@ -103,6 +115,9 @@ class SplitIKSolver:
         self.lower_position_limit = self._position_solver.lower_position_limit.copy()
         self.upper_position_limit = self._position_solver.upper_position_limit.copy()
         self._derive_wrist_decomposition()
+
+    def reset_transient_state(self) -> None:
+        self._position_solver.reset_transient_state()
 
     def solve(
         self,

@@ -5,8 +5,9 @@
 <p align="center">
   <table>
     <tr>
-      <td align="center"><img src="assest/cut_30s.gif" width="400"></td>
-      <td align="center"><img src="assest/dual.gif" width="400"></td>
+      <!-- <td align="center"><img src="assest/cut_30s.gif" width="400"></td>
+      <td align="center"><img src="assest/dual.gif" width="400"></td> -->
+      <td align="center"><img src="assest/dual_400_8fps.gif" width="400"></td>
     </tr>
   </table>
 </p>

@@ -33,8 +33,10 @@ cartesian_mapping:
 
 # pose QP 逆运动学
 qp_ik:
+  split_contour_mode: motion  # shoulder_lateral weights sideways error only.
   qp_use_sent_velocity: false  # Experimental; combined real-motion trial failed.
   split_contour_weight: 1.0  # 1: original isotropic task; >1 penalizes transverse error.
+  split_contour_speed_gate: false  # true: apply the contour weight only at high Cartesian speed.
   split_reference_speed_m_s: 0.0  # 0: disabled; governs position and velocity together.
   split_reference_acceleration_m_s2: 1.5
   qp_solver: scipy  # scipy | osqp
@@ -68,6 +70,8 @@ motion_limits:
 
 # MIT 控制（与 IK 算法无关，先用分轴调参验证）
 mit:
+  mit_q1_reference_error_deg: 0.0  # 0: disabled; bounded position reference, maximum 2 degrees.
+  mit_arm_reference_error_deg: 0.0  # 0: disabled; bounded q1-q3 position reference, maximum 3 degrees.
   mit_kp: [25.0, 30.0, 30.0, 10.0, 10.0, 10.0]  # q1-q6
   mit_kd: [5.0, 5.0, 4.0, 0.5, 0.5, 0.5]  # q1-q6
   mit_torque_limit_nm: [27.0, 27.0, 27.0, 7.0, 7.0, 7.0]  # q1-q6

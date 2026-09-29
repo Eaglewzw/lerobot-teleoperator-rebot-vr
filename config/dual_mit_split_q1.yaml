@@ -1,0 +1,68 @@
+# Dual-arm q1 lateral-tracking profile.
+# No hard q1 lock, speed reduction, or acceleration-limit removal.
+# The bounded q1 reference is cleared on HOLD and stale velocity.
+vr:
+  host: 0.0.0.0
+  port: 63901
+
+arms:
+  left:
+    hand: left
+    robot_port: /dev/serial/by-path/pci-0000:05:00.3-usb-0:2:1.0
+    robot_id: rebot_left
+    control_config: mit_split.yaml
+    overrides:
+      startup:
+        initial_move_tolerance_deg: 4.0
+        exit_zero_tolerance_deg: 3.0
+      cartesian_mapping:
+        position_scale: 0.5
+        orientation_scale: 0.6
+      motion_limits:
+        max_joint_speed_rad_s: 2.0
+        max_joint_acceleration_rad_s2: 6.0
+        wrist_speed_rad_s: 2.0
+        wrist_acceleration_rad_s2: 6.0
+        max_relative_target_deg: 10.0
+        wrist_relative_target_deg: 10.0
+        gripper_relative_target_deg: 5.0
+      qp_ik:
+        split_contour_mode: shoulder_lateral
+        split_contour_weight: 25.0
+        qp_use_sent_velocity: true
+      mit:
+        mit_q1_reference_error_deg: 2.0
+        mit_kd: [4.0, 5.0, 4.0, 0.5, 0.5, 0.5]
+  right:
+    hand: right
+    robot_port: /dev/serial/by-path/pci-0000:05:00.4-usb-0:2:1.0
+    robot_id: rebot_right
+    control_config: mit_split.yaml
+    overrides:
+      qp_ik:
+        split_contour_mode: shoulder_lateral
+        split_contour_weight: 25.0
+        qp_use_sent_velocity: true
+      mit:
+        mit_q1_reference_error_deg: 2.0
+        mit_kd: [4.0, 5.0, 4.0, 0.5, 0.5, 0.5]
+      startup:
+        exit_zero_tolerance_deg: 3.0
+      cartesian_mapping:
+        position_scale: 0.5
+        orientation_scale: 0.6
+      motion_limits:
+        max_joint_speed_rad_s: 2.0
+        max_joint_acceleration_rad_s2: 6.0
+        wrist_speed_rad_s: 2.0
+        wrist_acceleration_rad_s2: 6.0
+        max_relative_target_deg: 10.0
+        wrist_relative_target_deg: 10.0
+        gripper_relative_target_deg: 5.0
+
+coordination:
+  fault_policy: hold_both
+runtime:
+  duration: 0.0
+  heartbeat_timeout_s: 0.5
+  log_dir: ../logs/dual

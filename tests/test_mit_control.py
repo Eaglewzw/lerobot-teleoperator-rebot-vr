@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from types import SimpleNamespace
 
 import numpy as np
@@ -57,6 +58,8 @@ def _dispatcher(
     position_lookahead_s: np.ndarray | None = None,
     velocity_aligned_axes: np.ndarray | None = None,
     joint_limit_margin_rad: float = 0.0,
+    q1_reference_error_deg: float = 0.0,
+    arm_reference_error_deg: float = 0.0,
 ) -> MITCommandDispatcher:
     return MITCommandDispatcher(
         robot,
@@ -68,6 +71,8 @@ def _dispatcher(
         position_lookahead_s=position_lookahead_s,
         velocity_aligned_axes=velocity_aligned_axes,
         joint_limit_margin_rad=joint_limit_margin_rad,
+        q1_reference_error_deg=q1_reference_error_deg,
+        arm_reference_error_deg=arm_reference_error_deg,
         gravity_ramp_s=0.0,
     )
 
@@ -398,3 +403,104 @@ def test_mit_cli_defaults_to_pos_vel_and_validates_protocol_ranges() -> None:
     invalid_gripper_kd = parser.parse_args(["--gripper-mit-kd", "5.1"])
     with pytest.raises(ValueError, match="gripper-mit-kd"):
         validate_args(invalid_gripper_kd)
+
+
+def _arm_reference_dispatcher(robot, monkeypatch, now_s, **overrides):
+    monkeypatch.setattr(
+        "lerobot_teleoperator_rebot_vr.control.mit.time.monotonic",
+        lambda: now_s[0],
+    )
+    kwargs = dict(
+        acceleration_limit_rad_s2=np.full(6, 100.0),
+        position_lookahead_s=np.array([0.05, 0.05, 0.05, 0.025, 0.025, 0.025]),
+        arm_reference_error_deg=2.0,
+    )
+    kwargs.update(overrides)
+    dispatcher = _dispatcher(robot, **kwargs)
+    dispatcher.get_observation()
+    action = {f"{name}.pos": 0.0 for name in (*ARM_JOINT_NAMES, GRIPPER_NAME)}
+    dispatcher.send_action(action)
+    return dispatcher, action
+
+
+def test_mit_arm_reference_winds_up_to_bounded_error_when_stalled(monkeypatch):
+    now_s = [10.0]
+    robot = _FakeRobot()
+    dispatcher, action = _arm_reference_dispatcher(robot, monkeypatch, now_s)
+    dispatcher.set_arm_velocity(np.full(6, 0.2))
+    window = math.radians(2.0)
+    for _ in range(200):
+        now_s[0] += 0.01
+        dispatcher.send_action(action)
+    # Stalled joints saturate at window + lead; wrists keep the plain lead.
+    expected_arm = window + 0.2 * 0.05
+    for name in ARM_JOINT_NAMES[:3]:
+        assert robot.motors[name].mit_calls[-1][0] == pytest.approx(expected_arm)
+    for name in ARM_JOINT_NAMES[3:]:
+        assert robot.motors[name].mit_calls[-1][0] == pytest.approx(0.2 * 0.025)
+
+
+def test_mit_arm_reference_preserves_small_lead_when_tracking(monkeypatch):
+    now_s = [10.0]
+    robot = _FakeRobot()
+    dispatcher, action = _arm_reference_dispatcher(robot, monkeypatch, now_s)
+    dispatcher.set_arm_velocity(np.full(6, 0.2))
+    for _ in range(60):
+        now_s[0] += 0.01
+        observation = {}
+        for name in (*ARM_JOINT_NAMES, GRIPPER_NAME):
+            calls = robot.motors[name].mit_calls
+            observation[f"{name}.pos"] = math.degrees(calls[-1][0]) if calls else 0.0
+        dispatcher.set_observation(observation)
+        dispatcher.send_action(action)
+    # Perfect tracking keeps the reference inside the window; the drive error
+    # shrinks to one integration step instead of the fixed lookahead lead.
+    for name in ARM_JOINT_NAMES[:3]:
+        position = robot.motors[name].mit_calls[-1][0]
+        actual = math.radians(observation[f"{name}.pos"])
+        assert position - actual == pytest.approx(0.2 * 0.01, abs=1e-9)
+
+
+def test_mit_arm_reference_clears_on_stop_and_reanchors(monkeypatch):
+    now_s = [10.0]
+    robot = _FakeRobot()
+    dispatcher, action = _arm_reference_dispatcher(robot, monkeypatch, now_s)
+    dispatcher.set_arm_velocity(np.full(6, 0.2))
+    for _ in range(100):
+        now_s[0] += 0.01
+        dispatcher.send_action(action)
+    assert dispatcher.arm_reference_rad is not None
+    dispatcher.stop_arm_velocity(immediate=True)
+    assert dispatcher.arm_reference_rad is None
+    dispatcher.set_arm_velocity(np.full(6, 0.2))
+    now_s[0] += 0.01
+    dispatcher.send_action(action)  # re-establishes the velocity step timing
+    now_s[0] += 0.01
+    dispatcher.send_action(action)
+    # After the stop the reference restarts from feedback: no leftover windup.
+    for name in ARM_JOINT_NAMES[:3]:
+        position = robot.motors[name].mit_calls[-1][0]
+        assert position == pytest.approx(0.2 * 0.05 + 0.2 * 0.01)
+
+
+def test_mit_arm_reference_validation() -> None:
+    robot = _FakeRobot()
+    lookahead = np.array([0.05, 0.05, 0.05, 0.025, 0.025, 0.025])
+    acceleration = np.full(6, 100.0)
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        _dispatcher(
+            robot,
+            acceleration_limit_rad_s2=acceleration,
+            position_lookahead_s=lookahead,
+            q1_reference_error_deg=1.0,
+            arm_reference_error_deg=2.0,
+        )
+    with pytest.raises(ValueError, match=r"within \[0, 3\]"):
+        _dispatcher(
+            robot,
+            acceleration_limit_rad_s2=acceleration,
+            position_lookahead_s=lookahead,
+            arm_reference_error_deg=4.0,
+        )
+    with pytest.raises(ValueError, match="velocity alignment"):
+        _dispatcher(robot, arm_reference_error_deg=2.0)

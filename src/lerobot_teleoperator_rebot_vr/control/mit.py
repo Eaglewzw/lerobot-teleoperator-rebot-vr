@@ -48,6 +48,8 @@ class MITCommandDispatcher:
         arm_acceleration_limit_rad_s2: np.ndarray | None = None,
         position_lookahead_s: np.ndarray | None = None,
         velocity_aligned_axes: np.ndarray | None = None,
+        q1_reference_error_deg: float = 0.0,
+        arm_reference_error_deg: float = 0.0,
         joint_limit_margin_rad: float = 0.0,
         gravity_scale: float = 1.0,
         gravity_ramp_s: float = 1.0,
@@ -89,6 +91,25 @@ class MITCommandDispatcher:
         )
         if self.velocity_aligned_axes.shape != (6,):
             raise ValueError("MIT velocity-aligned axes must contain six values")
+        if not np.isfinite(q1_reference_error_deg) or not 0 <= q1_reference_error_deg <= 2:
+            raise ValueError("q1 reference error must be finite and within [0, 2] degrees")
+        if q1_reference_error_deg and (self.position_lookahead_s is None or
+                self.acceleration_limit_rad_s2 is None or not self.velocity_aligned_axes[0]):
+            raise ValueError("q1 reference requires velocity alignment and acceleration limits")
+        if not np.isfinite(arm_reference_error_deg) or not 0 <= arm_reference_error_deg <= 3:
+            raise ValueError("arm reference error must be finite and within [0, 3] degrees")
+        if arm_reference_error_deg and q1_reference_error_deg:
+            raise ValueError("arm reference and q1 reference are mutually exclusive")
+        if arm_reference_error_deg and (self.position_lookahead_s is None
+                or self.acceleration_limit_rad_s2 is None
+                or not np.all(self.velocity_aligned_axes[:3])):
+            raise ValueError(
+                "arm reference requires velocity alignment and acceleration limits"
+            )
+        self.arm_error_limit_rad = math.radians(arm_reference_error_deg)
+        self.arm_reference_rad: np.ndarray | None = None
+        self.q1_error_limit_rad = math.radians(q1_reference_error_deg)
+        self.q1_reference: float | None = None
         if np.any(self.kp > MIT_KP_MAX):
             raise ValueError(f"MIT Kp cannot exceed {MIT_KP_MAX:g}")
         if np.any(self.kd > MIT_KD_MAX):
@@ -174,6 +195,8 @@ class MITCommandDispatcher:
 
     def stop_arm_velocity(self, *, immediate: bool) -> None:
         """Request zero velocity, optionally bypassing the deceleration ramp."""
+        self.q1_reference = None
+        self.arm_reference_rad = None
         self._target_velocity_rad_s.fill(0.0)
         self._input_velocity_rad_s.fill(0.0)
         self._speed_limited.fill(False)
@@ -264,12 +287,49 @@ class MITCommandDispatcher:
                 safe_lower,
                 safe_upper,
             )
+            if self.arm_error_limit_rad > 0.0:
+                # Bounded absolute position reference for q1-q3: integrate the
+                # already-limited desired velocity so a stalled joint keeps
+                # building position error (and therefore drive torque) instead
+                # of letting the feedback-anchored target chase the stall.
+                # The lookahead lead is preserved on top of the reference, so
+                # well-tracked high-speed motion keeps the original drive.
+                dt = self._velocity_step_dt_s or 0.0
+                reference = (
+                    q_actual_rad[:3].copy()
+                    if self.arm_reference_rad is None
+                    else self.arm_reference_rad
+                )
+                reference = np.clip(
+                    reference + self._desired_velocity_rad_s[:3] * dt,
+                    q_actual_rad[:3] - self.arm_error_limit_rad,
+                    q_actual_rad[:3] + self.arm_error_limit_rad,
+                )
+                self.arm_reference_rad = reference
+                aligned_position_rad[:3] = np.clip(
+                    reference
+                    + self._desired_velocity_rad_s[:3] * self.position_lookahead_s[:3],
+                    safe_lower[:3],
+                    safe_upper[:3],
+                )
             aligned_position_deg = np.rad2deg(aligned_position_rad)
             for index, name in enumerate(ARM_JOINT_NAMES):
                 if self.velocity_aligned_axes[index]:
                     goal_deg[name] = float(aligned_position_deg[index])
         goal_deg = self._clip_joint_limits(goal_deg)
         goal_deg = self._clip_relative_target(goal_deg)
+        if self.arm_reference_rad is not None:
+            # Re-anchor the reference to what was actually sent so a binding
+            # limit clip cannot wind the integrator up behind the boundary.
+            sent3 = np.deg2rad(
+                [goal_deg[name] for name in ARM_JOINT_NAMES[:3]]
+            )
+            self.arm_reference_rad = np.clip(
+                sent3
+                - self._desired_velocity_rad_s[:3] * self.position_lookahead_s[:3],
+                q_actual_rad[:3] - self.arm_error_limit_rad,
+                q_actual_rad[:3] + self.arm_error_limit_rad,
+            )
         if self._first_command_s is None:
             self._first_command_s = now_s
         ramp = (
@@ -301,6 +361,22 @@ class MITCommandDispatcher:
                                self.last_feedforward_torque_nm)
 
     def _send_goal(self, goal_deg, velocity, feedforward):
+        if self.q1_error_limit_rad > 0 and self._velocity_aligned_position:
+            actual = math.radians(self._feedback_deg(ARM_JOINT_NAMES[0]))
+            dt = self._velocity_step_dt_s or 0.0
+            if self.q1_reference is None:
+                self.q1_reference = actual
+            self.q1_reference = float(np.clip(
+                self.q1_reference + velocity[0] * dt,
+                actual - self.q1_error_limit_rad, actual + self.q1_error_limit_rad,
+            ))
+            proposed = dict(goal_deg)
+            proposed[ARM_JOINT_NAMES[0]] = math.degrees(self.q1_reference)
+            clipped = self._clip_relative_target(self._clip_joint_limits(proposed))
+            goal_deg[ARM_JOINT_NAMES[0]] = clipped[ARM_JOINT_NAMES[0]]
+            self.q1_reference = math.radians(goal_deg[ARM_JOINT_NAMES[0]])
+        else:
+            self.q1_reference = None
         for index, name in enumerate(ARM_JOINT_NAMES):
             self.robot.motors[name].send_mit(
                 math.radians(goal_deg[name]),

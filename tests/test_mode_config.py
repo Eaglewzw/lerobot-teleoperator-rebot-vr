@@ -11,6 +11,8 @@ from lerobot_teleoperator_rebot_vr.runtime.cli import (
 
 
 MIT_PARAMETERS = {
+    "mit_q1_reference_error_deg",
+    "mit_arm_reference_error_deg",
     "mit_kp",
     "mit_kd",
     "mit_torque_limit_nm",

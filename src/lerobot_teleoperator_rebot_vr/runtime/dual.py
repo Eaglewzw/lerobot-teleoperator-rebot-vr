@@ -67,6 +67,8 @@ class DualArmSession:
         self._return_requested = False
         self._lock = threading.RLock()
         self._ready = set()
+        self._startup_connected = set()
+        self._startup_release = threading.Event()
         self._feedback = {side: (False, 0) for side in SIDES}
         self._latched_fault = None
         self._generation = 0
@@ -113,6 +115,31 @@ class DualArmSession:
     def arm_ready(self, side):
         with self._lock:
             self._ready.add(side)
+
+    def wait_for_startup(self, side, keep_alive):
+        """Hold connected arms until both can begin their startup motion.
+
+        IO stays outside the session lock. Stop/failure must interrupt this
+        rendezvous, including when the peer never finishes connecting.
+        """
+        deadline = time.monotonic() + self.config.arms[side].initial_move_timeout
+        if self.should_stop():
+            return False
+        keep_alive()
+        with self._lock:
+            if self.should_stop():
+                return False
+            self._startup_connected.add(side)
+            if self._startup_connected == set(SIDES):
+                self._startup_release.set()
+        while not self.should_stop():
+            if self._startup_release.wait(.01):
+                return not self.should_stop()
+            if time.monotonic() >= deadline:
+                self.request_stop()
+                raise RuntimeError(f"{side}: timed out waiting for both arms to connect")
+            keep_alive()
+        return False
 
     def arm_finished(self, side):
         # Any partial startup failure or unexpected exit stops the whole session.

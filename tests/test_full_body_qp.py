@@ -566,3 +566,95 @@ def test_grip_capture_resets_stale_command_velocity_and_skips_first_qp(model):
     assert status.command_deg[:6] == pytest.approx(q_deg)
     assert controller._dq_command_rad_s == pytest.approx(np.zeros(6))
     assert controller.worker.submitted == 0
+
+
+def test_contour_speed_gate_engages_holds_releases_and_resets(model) -> None:
+    solver = FullBodyQPIKSolver(
+        model,
+        ik_mode="position",
+        position_contour_weight=25.0,
+        position_contour_mode="shoulder_lateral",
+        contour_speed_gate=True,
+    )
+    ff_zero = np.zeros(3)
+    ff_fast = np.array([0.3, 0.0, 0.0])
+    # Resting input never engages the penalty.
+    for _ in range(100):
+        assert solver._effective_contour_weight(ff_zero, 0.01) == 1.0
+    # Partial speed engages partially (smoothstep midpoint).
+    partial = solver._effective_contour_weight(np.array([0.175, 0.0, 0.0]), 0.01)
+    assert partial == pytest.approx(13.0)
+    solver.reset_transient_state()
+    # Full speed engages the configured maximum immediately.
+    assert solver._effective_contour_weight(ff_fast, 0.01) == pytest.approx(25.0)
+    # The hold keeps the full penalty through 350 ms of zero feedforward
+    # (the braking phase, where the input already returned to zero).
+    for _ in range(35):
+        assert solver._effective_contour_weight(ff_zero, 0.01) == pytest.approx(25.0)
+    releasing = solver._effective_contour_weight(ff_zero, 0.01)
+    assert 1.0 < releasing < 25.0
+    for _ in range(30):
+        weight = solver._effective_contour_weight(ff_zero, 0.01)
+    assert weight == 1.0
+    # A fresh engagement after release still works.
+    assert solver._effective_contour_weight(ff_fast, 0.01) == pytest.approx(25.0)
+    solver.reset_transient_state()
+    assert solver._effective_contour_weight(ff_zero, 0.01) == 1.0
+
+
+def test_contour_speed_gate_disabled_applies_constant_weight(model) -> None:
+    solver = FullBodyQPIKSolver(
+        model,
+        ik_mode="position",
+        position_contour_weight=9.0,
+        position_contour_mode="shoulder_lateral",
+        contour_speed_gate=False,
+    )
+    for speed in (0.0, 0.05, 0.3, 1.0):
+        ff = np.array([speed, 0.0, 0.0])
+        assert solver._effective_contour_weight(ff, 0.01) == 9.0
+
+
+def test_contour_speed_gate_at_rest_matches_baseline_solve(model) -> None:
+    q = np.array([0.1, -0.8, -0.7, 0.2, -0.1, 0.3])
+    target_position, _ = model.wrist_anchor_pose(q)
+    target_position = target_position + np.array([0.02, 0.0, 0.0])
+    target_rotation = np.eye(3)
+    kwargs = dict(
+        target_position=target_position,
+        target_rotation=target_rotation,
+        q_actual=q,
+        dq_previous=np.zeros(6),
+        dt=0.01,
+        q_nominal=q,
+        max_joint_speed=np.full(6, 0.5),
+        max_joint_acceleration=np.full(6, 2.0),
+        target_linear_velocity_m_s=np.zeros(3),
+    )
+    baseline = FullBodyQPIKSolver(model, ik_mode="position", max_solve_time_ms=20.0)
+    gated = FullBodyQPIKSolver(
+        model,
+        ik_mode="position",
+        max_solve_time_ms=20.0,
+        position_contour_weight=25.0,
+        position_contour_mode="shoulder_lateral",
+        contour_speed_gate=True,
+    )
+    baseline_result = baseline.solve(**kwargs)
+    gated_result = gated.solve(**kwargs)
+    assert gated_result.success
+    assert gated_result.joint_velocity_rad_s == pytest.approx(
+        baseline_result.joint_velocity_rad_s, abs=1e-9
+    )
+
+
+def test_contour_gate_parameter_validation(model) -> None:
+    with pytest.raises(ValueError, match="contour speed gate"):
+        FullBodyQPIKSolver(
+            model,
+            ik_mode="position",
+            position_contour_weight=9.0,
+            position_contour_mode="shoulder_lateral",
+            contour_speed_gate=True,
+            contour_gate_full_m_s=0.05,
+        )
