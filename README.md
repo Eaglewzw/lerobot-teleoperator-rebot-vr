@@ -1,14 +1,51 @@
 # reBot VR Teleoperation
 
-基于 PICO 4 和 LeRobot 的 reBot B601-DM 单／双臂遥操，采用分离式 IK（split IK）、MIT／POS_VEL 控制和夹爪控制。
+<h3 align="center">基于 PICO 4 的 reBot B601-DM VR 遥操作系统 (VR Teleoperation for reBot B601-DM with PICO 4)</h3>
 
 <p align="center">
-  <table>
-    <tr>
-      <td align="center"><img src="assest/dual_400_8fps.gif" width="600"></td>
-    </tr>
-  </table>
+  <a href="https://www.python.org"><img alt="Python" src="https://img.shields.io/badge/Python-3.12+-3776AB?style=for-the-badge&logo=python&logoColor=white"></a>
+  <a href="https://github.com/huggingface/lerobot"><img alt="LeRobot" src="https://img.shields.io/badge/LeRobot-0.6.x-orange?style=for-the-badge"></a>
+  <a href="assest/docs/INVERSE_KINEMATICS_DESIGN.md"><img alt="split IK" src="https://img.shields.io/badge/IK-split-green?style=for-the-badge"></a>
+  <a href="https://www.picoxr.com"><img alt="PICO 4" src="https://img.shields.io/badge/PICO-4-blueviolet?style=for-the-badge"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/License-Apache--2.0-blue?style=for-the-badge"></a>
 </p>
+
+> 本项目是一个基于 PICO 4 手柄的 reBot B601-DM 机械臂VR 遥操作平台，涵盖位姿映射、分离式逆运动学、MIT/POS_VEL 电机控制与双臂协调，面向遥操作展示与数据采集功能。
+
+* * *
+
+## 项目简介
+
+- **VR 遥操作**：PICO 4 手柄位姿实时映射末端，支持单/双臂操作，Grip 离合、按键回位、夹爪控制。
+- **分离式 IK**：q1–q3 位置 QP 跟踪 joint4 轴心，q4–q6 闭式跟随腕姿，腕部转动不干扰肩部跟踪。
+- **双臂协调与安全**：双臂支持MIT与POS_VEL模式，可实现同步启动、故障同停、限位内缩、制动预留、故障保持、启动/退出归零。
+- **诊断**：用于事后复现与调参分析的CSV 记录、延迟分位数汇总与离线分析的API。
+
+* * *
+
+## 演示视频
+
+<p align="center">
+  <img src="assest/dual_400_8fps.gif" width="600" alt="双臂遥操作演示">
+</p>
+
+## 系统架构与控制
+
+| 模块 | 职责 | 实现 |
+| --- | --- | --- |
+| VR 输入 | PICO 4 手柄位姿/按键接收与有效性管理 | `vr/` |
+| 逆解 | q1–q3 位置 QP + q4–q6 腕部闭式解 | `ik/` |
+| 电机下发 | MIT（重力前馈/有界参考）与 POS_VEL | `control/` |
+| 运行时 | 单/双臂主循环、启动归零、故障保持 | `runtime/` |
+
+IK 只有 split 一种。不指定配置时，按电机模式加载 `config/mit_split.yaml` 或 `config/pos_vel_split.yaml`；单臂命令行显式参数优先于 YAML。
+
+| 电机控制 | 单臂配置 | 双臂配置 |
+| --- | --- | --- |
+| MIT | `config/mit_split.yaml` | `config/dual_mit_split.yaml` |
+| POS_VEL | `config/pos_vel_split.yaml` | — |
+
+* * *
 
 ## 安全须知
 
@@ -17,11 +54,16 @@
 - MIT 模式为实验性功能，需验证增益与重力补偿方向；`mit_torque_limit_nm` 仅限制前馈，不是总输出扭矩限制。
 - 双臂目前要求基座竖直、同向并排、两条独立 CAN 总线；没有跨臂碰撞检测或共同物体约束。
 
-## 安装与 VR 连接
+* * *
 
-要求：Linux、Python 3.12+、LeRobot 0.6.x（含 `rebot` extra）、达妙串口转 CAN，以及 PICO 4。
+## 快速上手
 
-在工程根目录执行：
+### 1. 环境依赖
+
+- Linux、Python 3.12+、LeRobot 0.6.x（含 `rebot` extra）
+- 达妙串口转 CAN、PICO 4（开启开发者模式与 USB 调试）
+
+### 2. 安装与标定
 
 ```bash
 uv venv --python 3.12 .venv
@@ -29,28 +71,22 @@ source .venv/bin/activate
 uv pip install -e .
 ```
 
-已有 LeRobot 环境时，直接安装到该环境，无须新建：
+已有 LeRobot 环境时直接装入，无须新建：
 
 ```bash
 uv pip install --python ~/Python/lerobot/.venv/bin/python -e .
 source ~/Python/lerobot/.venv/bin/activate
 ```
 
-PICO 开启开发者模式和 USB 调试后安装发送端：
+PICO 侧安装发送端：
 
 ```bash
 adb install -r assest/reBot.apk
 ```
 
-发送端填写主机局域网 IP、端口 `63901`，不能填写 `0.0.0.0`。可先用以下命令检查数据，不连接机械臂；检查完退出，释放端口：
+> 发送端填写主机局域网 IP、端口 `63901`，不能填 `0.0.0.0`。可先运行 `rebot-vr-print --host 0.0.0.0 --port 63901 --hand right --rate 10` 检查数据（不连接机械臂），检查完退出以释放端口。
 
-```bash
-rebot-vr-print --host 0.0.0.0 --port 63901 --hand right --rate 10
-```
-
-## 零位标定
-
-停止其他串口程序，确认电机 ID 1–7 在线，按标定程序提示操作。每条臂分别标定，`robot.id` 必须与遥操配置一致：
+零位标定（停止其他串口程序，确认电机 ID 1–7 在线，逐臂标定，`robot.id` 须与遥操配置一致）：
 
 ```bash
 # 单臂示例；串口按实际连接修改
@@ -60,57 +96,33 @@ lerobot-calibrate \
   --robot.id=rebot_b601_vr
 ```
 
-双臂分别使用配置中左／右臂的串口及 `rebot_left`／`rebot_right`。双臂入口缺少标定会报错，不要靠跳过检查或放宽到位容差处理零位偏差。
+> 双臂分别使用配置中左／右臂的串口及 `rebot_left`／`rebot_right`。双臂入口缺少标定会报错；不要靠跳过检查或放宽到位容差处理零位偏差。
 
-## 双臂运行
-
-编辑 [config/dual_mit_split.yaml](config/dual_mit_split.yaml)，核对：
-
-- `arms.left/right.robot_port` 与实体左右臂一致，`robot_id` 不同。
-- `control_config` 选择各臂的单臂配置，`overrides` 覆盖对应臂参数；文件路径相对于双臂 YAML 所在目录。
-- 当前使用 `/dev/serial/by-path/...` 固定 USB 插口。不要交换线缆插口；更换主机或 USB 拓扑后重新核对。只有适配器序列号各自唯一时才使用 `by-id`。
+### 3. 运行
 
 ```bash
 # 仅检查生效配置，不连接硬件
 rebot-vr-teleoperate-dual --config config/dual_mit_split.yaml --dry-run
 
-# 低速启动／回零验证：会驱动机械臂，禁用 VR
+# 低速启动／回零验证：会驱动机械臂，禁用 VR（速度≤0.25 rad/s、加速度≤0.5 rad/s²）
 rebot-vr-teleoperate-dual --config config/dual_mit_split.yaml --startup-zero-test
 
 # 正常双臂遥操
 rebot-vr-teleoperate-dual --config config/dual_mit_split.yaml
 ```
 
-低速验证将启动／回零速度限制在不超过 0.25 rad/s、加速度不超过 0.5 rad/s²；两臂启动到位后等待 2 秒，自动回零并断开。不修改 YAML、增益或容差。正常遥操按 YAML 运行，不沿用本次诊断限速。
+> 双臂配置 `arms.left/right.robot_port` 须与实体左右臂一致且 `robot_id` 不同；当前用 `/dev/serial/by-path/...` 固定 USB 插口，不要交换线缆。若提示命令不存在，重新安装本项目，或用 `PYTHONPATH=src python -m lerobot_teleoperator_rebot_vr.runtime.dual --config ...` 运行。
 
-若提示命令不存在，重新安装本项目，或使用：
-
-```bash
-PYTHONPATH=src python -m lerobot_teleoperator_rebot_vr.runtime.dual \
-  --config config/dual_mit_split.yaml
-```
-
-## 单臂运行
+单臂（MIT + split IK，确认标定完成后）：
 
 ```bash
-# MIT + 分离式 IK；确认标定完成后运行
 rebot-vr-teleoperate \
   --robot-port /dev/ttyACM0 \
   --motor-control-mode mit \
   --control-config config/mit_split.yaml
 ```
 
-首次验证可在上述命令后追加以下参数，跳过启动移动及退出回零，并降低遥操限制：
-
-```text
---no-move-to-initial --no-return-to-zero-on-exit
---position-scale 0.25 --orientation-scale 0.25
---max-joint-speed-rad-s 0.5 --max-joint-acceleration-rad-s2 1.0
---wrist-speed-rad-s 0.5 --wrist-acceleration-rad-s2 1.0
---max-relative-target-deg 5 --wrist-relative-target-deg 5
-```
-
-以上为参数清单，追加时用空格或 shell 续行连接。退出仍默认断使能。
+* * *
 
 ## 手柄与退出
 
@@ -123,20 +135,7 @@ rebot-vr-teleoperate \
 | 第一次 Ctrl+C | 正常运行时，按各臂配置请求回零后退出 |
 | 第二次 Ctrl+C／SIGTERM | 中止回零，进入清理流程；不等同于硬件急停 |
 
-启动、跟踪恢复或按键回位后，需先完全松开 Grip 再激活。按键回位不要求按住 Grip，但仍需有效跟踪与反馈。
-
-双臂只有在两侧就绪、跟踪及反馈有效时才允许跟随；任一侧异常会阻止两侧继续跟随，严重故障需检查后重启。启动失败、反馈故障、异常或定时结束不自动回零；断开或阻塞的总线无法保证执行保持／失能命令。
-
-## 配置选择
-
-| 电机控制 | 配置（split IK） |
-| --- | --- |
-| MIT | `config/mit_split.yaml` |
-| POS_VEL | `config/pos_vel_split.yaml` |
-
-IK 只有 split 一种：q1–q3 跟踪 joint4 轴心位置，q4–q6 跟随手柄相对旋转。不指定配置时，按电机模式加载 `config/mit_split.yaml` 或 `config/pos_vel_split.yaml`。单臂命令行显式参数优先于 YAML，电机模式须与配置一致。增益、限速、初始姿态和夹爪参数见 [参数说明](assest/docs/PARAMETERS.md)。
-
-双臂侧摆修正：`config/dual_mit_split_gated.yaml` 在基线 `config/dual_mit_split.yaml` 上增加了速度门控的肩部侧向误差加权与 q1–q3 有界位置参考，用于抑制高速直线回程的肩部侧摆，公式见 [逆解设计](assest/docs/INVERSE_KINEMATICS_DESIGN.md)（侧向加权）与 [控制设计](assest/docs/CONTROL_DESIGN.md)（有界位置参考）。
+> 启动、跟踪恢复或按键回位后，需先完全松开 Grip 再激活。双臂只有在两侧就绪、跟踪及反馈有效时才允许跟随；任一侧异常会阻止两侧继续跟随。启动失败、反馈故障、异常或定时结束不自动回零。
 
 ## 日志与测试
 
@@ -155,8 +154,14 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q
 
 基础 QP 后端为 SciPy；需要 OSQP 时安装 `uv pip install -e '.[qp]'`。更多命令参数使用 `--help` 查看。
 
+* * *
+
 ## 详细文档
 
 [系统架构](assest/docs/ARCHITECTURE.md) · [API](assest/docs/API_REFERENCE.md) · [控制设计](assest/docs/CONTROL_DESIGN.md) · [逆解设计](assest/docs/INVERSE_KINEMATICS_DESIGN.md) · [参数说明](assest/docs/PARAMETERS.md)
+
+* * *
+
+> **项目维护者注**：QP 目标函数、硬约束与奇异性自适应的推导见 [逆解设计](assest/docs/INVERSE_KINEMATICS_DESIGN.md)；MIT 下发与有界位置参考见 [控制设计](assest/docs/CONTROL_DESIGN.md)。
 
 许可证：[Apache-2.0](LICENSE)
