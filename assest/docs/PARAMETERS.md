@@ -83,8 +83,11 @@ split profile 的初始策略是保持已经验证的 MIT 电机层参数，只�
 | `--singularity-characteristic-length-m` | 0.3 | 0.3 | Jacobian 线速度行归一化长度，m |
 | `--joint-limit-margin-deg` | 2 | 2 | 关节限位内缩余量，deg |
 | `--qp-max-solve-time-ms` | 8 | 8 | 求解时间预算，ms；超时结果不采用 |
+| `--split-contour-mode` | motion | motion | `shoulder_lateral` 时只惩罚绕肩轴的侧向速度误差（抑制高速侧摆） |
+| `--split-contour-weight` | 1 | 1 | 侧向误差代价权重；1 为各向同性，>1 惩罚侧摆方向 |
+| `--split-contour-speed-gate` | 关闭 | 关闭 | 开启后侧向权重仅高速启用（FF 0.10→0.25 m/s 升权，保持 350 ms、250 ms 退出），低速恒为 1 |
 
-要求 `0 ≤ critical < threshold`、`0 ≤ damping_min ≤ damping_max`。直接求解后检查耗时，超时丢弃。split 的 q1–q3 位置 QP 使用位置代价、位置增益、阻尼、平滑、关节姿态正则、奇异性阈值与限位余量；q4–q6 闭式分解使用 `qp_orientation_gain` 作为腕部误差增益。
+要求 `0 ≤ critical < threshold`、`0 ≤ damping_min ≤ damping_max`。直接求解后检查耗时，超时丢弃。split 的 q1–q3 位置 QP 使用位置代价、位置增益、阻尼、平滑、关节姿态正则、奇异性阈值与限位余量；q4–q6 闭式分解使用 `qp_orientation_gain` 作为腕部误差增益。侧向加权只改变位置任务的权重矩阵，不改关节限幅也不锁 q1，详见 [逆解设计](INVERSE_KINEMATICS_DESIGN.md)。
 
 ## MIT 参数
 
@@ -92,11 +95,12 @@ split profile 的初始策略是保持已经验证的 MIT 电机层参数，只�
 
 | 参数 | 默认 | 代码校验 / 含义 |
 |---|---|---|
-| `--mit-kp` | 25 30 30 10 10 10 | 每轴 [0, 500]；位置误差增益 |
-| `--mit-kd` | 5 5 4 0.5 0.5 0.5 | 每轴 [0, 5]；速度误差增益 |
+| `--mit-kp` | 25 30 30 25 25 25 | 每轴 [0, 500]；位置误差增益 |
+| `--mit-kd` | 4 4 4 0.5 0.5 0.5 | 每轴 [0, 5]；速度误差增益 |
 | `--mit-torque-limit-nm` | 27 27 27 7 7 7 | 每轴大于 0，且不超过上述固定上限；仅限制前馈扭矩 |
 | `--mit-gravity-scale` | 1 | [0, 2]；重力前馈倍率 |
 | `--mit-gravity-ramp-s` | 1.5 | 非负；重力前馈渐入时间，s；0 立即应用 |
+| `--mit-arm-reference-error-deg` | 0 | [0, 3]；q1–q3 有界位置参考窗口，deg；0 关闭。打破低速静摩擦死区，详见 [控制设计](CONTROL_DESIGN.md) |
 | `--mit-dynamics-urdf` | 内置模型 | 动力学 URDF 路径；不同于 IK 的 `--urdf` |
 
 `mit_torque_limit_nm` 仅限制前馈，不限制电机 PD 与前馈的总扭矩。

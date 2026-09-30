@@ -160,9 +160,14 @@ decimate_minmax(x, y, max_points) -> (x_reduced, y_reduced)
 | sigma_min / condition_number | 奇异性指标 |
 | qp_solve_time_ms / dq_norm_rad_s | 求解耗时 / 速度范数 |
 | MIT 字段 | 目标速度、重力和前馈扭矩 |
+| `controller_position_{x,y,z}_m` | 映射前的手柄位置；`controller_position_frame=xr` 为 V1 原始 XR 坐标，`robot_base` 为旧协议上游已转换坐标 |
+| `tcp_actual_position_*_m` / `tcp_target_position_*_m` | 机器人基座坐标下的反馈与映射目标 |
+| `tcp_position_error_*_m` | 目标减反馈；split 的位置控制点是 joint4 轴心，不是夹爪尖端 |
 | 延迟汇总 samples | 该指标有效记录数；p50/p95/p99 为分位数 |
 
 仅记录主循环，不含启动/退出回零。command 是控制器位置，可能与 MIT 最终下发值不同；没有 MPJPE、完整 TCP 位姿或电机接收确认。不同样本集合的分位数不能直接相加作总延迟。
+
+帧对齐：原始输入对应 `tracking_sample_received_monotonic_ns`，映射目标对应 `mapping_sample_id`，异步 IK 另用 `ik_sample_id`；不可默认同一行是同一输入帧。无新鲜输入或无映射目标时对应字段留空，启动／回零行不填这些遥操字段。
 
 当前提供分析 API，无 CSV 图形命令。
 

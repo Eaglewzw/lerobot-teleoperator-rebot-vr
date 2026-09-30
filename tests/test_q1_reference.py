@@ -72,18 +72,18 @@ def test_cli_rejects_reference_outside_mit_split():
         validate_args(args)
 
 
-def test_q1_profile_changes_only_validated_settings():
+def test_gated_profile_changes_only_validated_settings():
     from pathlib import Path
     from lerobot_teleoperator_rebot_vr.runtime.dual_config import load_dual_config
     root=Path(__file__).parents[1]/'config'
     baseline=load_dual_config(root/'dual_mit_split.yaml')
-    profile=load_dual_config(root/'dual_mit_split_q1.yaml')
+    profile=load_dual_config(root/'dual_mit_split_gated.yaml')
     for side in ('left','right'):
         a,b=vars(baseline.arms[side]),vars(profile.arms[side])
         changed={k for k in a if a[k]!=b[k]}-{'csv_log'}
-        assert changed=={'split_contour_mode','split_contour_weight','mit_q1_reference_error_deg','mit_kd','qp_use_sent_velocity'}
-        assert b['qp_use_sent_velocity'] is True
+        assert changed=={'split_contour_mode','split_contour_weight','split_contour_speed_gate','mit_arm_reference_error_deg'}
+        assert b['split_contour_speed_gate'] is True
         assert b['split_contour_weight']==25
-    assert profile.arms['left'].mit_q1_reference_error_deg==2
+    assert profile.arms['left'].mit_arm_reference_error_deg==2
     assert profile.arms['left'].split_contour_mode=='shoulder_lateral'
     assert profile.arms['left'].split_contour_weight==25

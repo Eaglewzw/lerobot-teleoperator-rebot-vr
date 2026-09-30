@@ -62,6 +62,15 @@ tau_ff = clip(gravity_scale * ramp * g(q_actual), ±torque_limit)
 
 默认前视 q1–q3 为 50 ms、q4–q6 为 25 ms。`torque_limit` 只限制前馈项。制动钳制优先于普通加速度连续性，实机仍可能超调。
 
+**q1–q3 有界位置参考（`mit_arm_reference_error_deg`）。** 上面的 `q_des` 以实时反馈为锚，位置环误差恒为 `dq_des·lookahead`；低速小指令下该力矩（`Kp·dq_des·lookahead`）可能低于静摩擦，关节卡住不动、残差一直留着（低速"不跟手"的根源）。启用有界参考后改为绝对锚定：
+
+```text
+ref   ← clip(ref + dq_des·dt,  q_actual ± W0)     # W0 = mit_arm_reference_error_deg
+q_des =  clip(ref + dq_des·lookahead,  安全限位)   # 仍保留 50 ms 前瞻引前
+```
+
+关节卡住时 `ref` 继续积分、误差（力矩）随时间增大直到打破静摩擦；正常高速跟随误差自然小于窗口，行为与原方案一致。`ref` 在停止、HOLD、速度过期时清零，且始终受关节限位与命令-反馈窗口约束。它既修复低速静摩擦死区，也给 q1 一个抵抗扰动的绝对锚。该参数仅 MIT 模式、范围 0–3°，不提高力矩上限、不取消加速度保护。
+
 MIT 无新速度超过 `max(3/fps, 0.03)` 秒，或消费到失败结果时，减速到零；非 ACTIVE 或反馈故障立即清零目标速度。
 
 ## 回位与夹爪

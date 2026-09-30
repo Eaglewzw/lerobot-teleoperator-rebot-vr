@@ -5,16 +5,12 @@
 <p align="center">
   <table>
     <tr>
-      <!-- <td align="center"><img src="assest/cut_30s.gif" width="400"></td>
-      <td align="center"><img src="assest/dual.gif" width="400"></td> -->
-      <td align="center"><img src="assest/dual_400_8fps.gif" width="400"></td>
+      <td align="center"><img src="assest/dual_400_8fps.gif" width="600"></td>
     </tr>
   </table>
 </p>
 
 ## 安全须知
-
-分离式 IK 高速回程侧摆问题仍未解决，新增实验选项默认关闭。
 
 - 配置可使机械臂在启动后自动移动，即使未按下 Grip。运行前核对零位、关节方向和运动区域，先做低速验证。
 - 退出默认断使能，机械臂可能下坠；须准备可靠支撑和急停，支撑不能阻挡测试运动。
@@ -140,11 +136,13 @@ rebot-vr-teleoperate \
 
 IK 只有 split 一种：q1–q3 跟踪 joint4 轴心位置，q4–q6 跟随手柄相对旋转。不指定配置时，按电机模式加载 `config/mit_split.yaml` 或 `config/pos_vel_split.yaml`。单臂命令行显式参数优先于 YAML，电机模式须与配置一致。增益、限速、初始姿态和夹爪参数见 [参数说明](assest/docs/PARAMETERS.md)。
 
+双臂侧摆修正：`config/dual_mit_split_gated.yaml` 在基线 `config/dual_mit_split.yaml` 上增加了速度门控的肩部侧向误差加权与 q1–q3 有界位置参考，用于抑制高速直线回程的肩部侧摆，公式见 [逆解设计](assest/docs/INVERSE_KINEMATICS_DESIGN.md)（侧向加权）与 [控制设计](assest/docs/CONTROL_DESIGN.md)（有界位置参考）。
+
 ## 日志与测试
 
 双臂日志默认保存至 `logs/dual/<运行ID>/`，包含左右臂 CSV、生效配置、延迟统计和退出报告。CSV 的 `phase` 区分启动、遥操与回零；分析采样时筛选 `row_kind=sample`。SDK 缓存状态不是新鲜失能确认，估计扭矩不是实测值。
 
-遥操 CSV 的 `controller_position_{x,y,z}_m` 记录映射前手柄位置；`controller_position_frame=xr` 表示 V1 原始 XR 坐标，`robot_base` 表示旧协议上游已转换坐标。`tcp_actual_position_*_m`、`tcp_target_position_*_m` 是机器人基座坐标下的反馈与映射目标，`tcp_position_error_*_m` 为目标减反馈，单位均为米；分离 IK 的位置控制点是 joint4 轴，不是夹爪尖端。原始输入对应 `tracking_sample_received_monotonic_ns`，映射目标对应 `mapping_sample_id`（输入接收单调时间纳秒）；异步 IK 另用 `ik_sample_id`，不可默认同一行是同一输入帧。无新鲜输入或无映射目标时对应字段留空，启动／回零行不填这些遥操字段。
+位置字段均为机器人基座坐标、单位米：`tcp_target_position_*_m` 是映射目标、`tcp_actual_position_*_m` 是反馈、`tcp_position_error_*_m` 是目标减反馈；split 的位置控制点是 joint4 轴心，不是夹爪尖端。逐字段说明与帧对齐（输入/目标/异步 IK 各自的时间戳与 id，不同行不一定是同一输入帧）见 [API 参考](assest/docs/API_REFERENCE.md#csv-与分析)。
 
 ```bash
 # 单臂记录：追加到实际运行命令
