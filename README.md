@@ -26,7 +26,7 @@
 ## 演示视频
 
 <p align="center">
-  <img src="assest/dual_400_8fps.gif" width="600" alt="双臂遥操作演示">
+  <img src="assest/dual-arm-block-grab.gif" width="600" alt="双臂遥操作演示">
 </p>
 
 ## 系统架构与控制
