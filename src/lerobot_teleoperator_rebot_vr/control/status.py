@@ -108,6 +108,7 @@ def build_running_status(
         gripper_actual_deg=gripper_actual_deg,
         gripper_target_deg=gripper.goal_deg,
         gripper_command_deg=gripper.command_deg,
+        gripper_velocity_deg_s=gripper.velocity_deg_s,
         actual_deg=np.concatenate(
             (np.rad2deg(q_actual_rad), [gripper_actual_deg])
         ),

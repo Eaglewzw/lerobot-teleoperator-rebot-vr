@@ -92,6 +92,7 @@ def shape_joint_position_command(
     max_acceleration: np.ndarray,
     lower_limit: np.ndarray,
     upper_limit: np.ndarray,
+    brake_at_target: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Apply joint limit, velocity and acceleration constraints to a position target."""
 
@@ -145,6 +146,13 @@ def shape_joint_position_command(
         -max_speed,
         max_speed,
     )
+    if brake_at_target:
+        # Reserve one integration step before braking to the fixed target.
+        # In particular, do not reach a distant endpoint at cruise speed and
+        # depend on the final position clamp to snap velocity straight to zero.
+        step_velocity = max_acceleration * dt_s
+        stopping_speed = np.sqrt(step_velocity**2 + 2. * max_acceleration * np.abs(error)) - step_velocity
+        desired_velocity = np.sign(error) * np.minimum(np.abs(desired_velocity), stopping_speed)
     velocity_change = np.clip(
         desired_velocity - previous_velocity,
         -max_acceleration * dt_s,

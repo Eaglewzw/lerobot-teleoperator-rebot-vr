@@ -259,6 +259,9 @@ def test_failed_or_interrupted_return_still_disconnects(runner, failure):
         real.main()
     assert runner.events.index("zero") < runner.events.index("disconnect")
 
+    assert not any(event.startswith("disable_") for event in runner.events)
+    assert not runner.robots[0].config.disable_torque_on_disconnect
+
 
 def test_startup_failure_does_not_attempt_zero(runner, monkeypatch):
     runner.args.move_to_initial = True
@@ -343,7 +346,7 @@ def test_partial_connection_failure_is_cleaned_without_homing(runner, monkeypatc
     assert runner.events.index("close_bus") < runner.events.index("disconnect")
 
 
-@pytest.mark.parametrize("option", ["--exit-zero-speed-rad-s", "--exit-zero-acceleration-rad-s2", "--exit-zero-tolerance-deg"])
+@pytest.mark.parametrize("option", ["--exit-zero-speed-rad-s", "--exit-zero-acceleration-rad-s2", "--exit-zero-tolerance-deg", "--exit-zero-stall-timeout"])
 @pytest.mark.parametrize("value", ["0", "-1", "nan"])
 def test_exit_motion_limits_must_be_finite_and_positive(option, value):
     with pytest.raises(ValueError):
@@ -397,3 +400,133 @@ def test_startup_records_completion_and_interruption(zero_setup):
         assert reached is not stop
         assert rows[-1]["phase"] == "startup"
         assert rows[-1]["motion_result"] == ("interrupted" if stop else "completed")
+
+
+def test_rs_two_degree_residual_cannot_complete_zero(zero_setup):
+    args, _ = zero_setup
+    args.exit_zero_tolerance_deg = .5
+    robot = FollowingRobot(follow=False)
+    robot.q_deg = np.array([0., .6, 2.63, 0., 0., 0.])
+    with pytest.raises(RuntimeError, match="not following"):
+        run_zero(robot, args)
+
+
+def test_zero_requires_continuous_stability_not_three_passes_through_tolerance():
+    from lerobot_teleoperator_rebot_vr.control.startup import StartupPoseMover
+    mover = StartupPoseMover(np.zeros(6), lower_limit_rad=np.full(6, -3.),
+        upper_limit_rad=np.full(6, 3.), max_speed_rad_s=.5, max_acceleration_rad_s2=1.,
+        tolerance_rad=np.deg2rad(.5), settle_time_s=.5, settle_speed_rad_s=np.deg2rad(1.))
+    for i in range(100):
+        assert not mover.update(np.deg2rad([(-1)**i * .2] * 6), .02).done
+    for _ in range(20):
+        assert not mover.update(np.zeros(6), .02).done
+    for _ in range(10):
+        status = mover.update(np.zeros(6), .02)
+    assert status.done
+
+
+def test_rs_slow_near_zero_progress_is_not_misclassified_as_stall(zero_setup):
+    args, clock = zero_setup
+    args.robot_model = "b601_rs"
+    args.exit_zero_tolerance_deg = .5
+    started = clock.now
+    robot = FollowingRobot(follow=False)
+
+    def slow_feedback():
+        # Only 0.06 deg improvement in 5s: old 0.125-deg progress threshold
+        # would abort at 0.54 deg, despite continuous convergence.
+        q4 = max(.45, .6 - .012 * (clock.now - started))
+        return observation([0., .2, .3, q4, 0., 0.])
+
+    robot.get_observation = slow_feedback
+    assert run_zero(robot, args)
+    assert 8.8 <= clock.now - started <= 10.
+    assert slow_feedback()["wrist_flex.pos"] <= .5
+
+
+def test_rs_stalled_just_outside_tolerance_still_fails_with_precise_diagnostics(zero_setup):
+    args, _ = zero_setup
+    args.robot_model = "b601_rs"
+    args.exit_zero_tolerance_deg = .5
+    robot = FollowingRobot(follow=False)
+    robot.q_deg = np.array([0., .2, .3, .504, 0., 0.])
+    with pytest.raises(RuntimeError, match=r"wrist_flex=0\.5040deg.*tolerance=0\.5000deg"):
+        run_zero(robot, args)
+
+
+@pytest.mark.parametrize("outcome", ["recovers", "stalled", "total_timeout"])
+def test_separate_zero_stall_window_keeps_arrival_and_total_deadline(zero_setup, outcome):
+    args, clock = zero_setup
+    args.robot_model = "b601_rs"
+    args.exit_zero_tolerance_deg = .5
+    args.exit_zero_stall_timeout = 10.
+    args.initial_move_timeout = 3. if outcome == "total_timeout" else 30.
+    robot = FollowingRobot(follow=False)
+    started = clock.now
+
+    def delayed_feedback():
+        # Synthetic breakaway after 8 s: exercises timing, not a prediction
+        # that the real wrist will overcome friction within this window.
+        wrist = .4 if outcome == "recovers" and clock.now - started >= 8. else .76
+        return observation([0., .2, .3, wrist, 0., 0.])
+
+    robot.get_observation = delayed_feedback
+    if outcome == "recovers":
+        assert run_zero(robot, args)
+        assert 8.5 <= clock.now - started < 9.
+    else:
+        match = "timed out" if outcome == "total_timeout" else "wrist_flex=0.7600deg"
+        with pytest.raises(RuntimeError, match=match):
+            run_zero(robot, args)
+        expected = 3. if outcome == "total_timeout" else 10.
+        assert expected <= clock.now - started < expected + .1
+    assert args.initial_stall_timeout == 5.  # Startup and caller remain unchanged.
+    assert args.exit_zero_tolerance_deg == .5
+
+
+def test_rs_recovers_from_worst_joint_switch_and_transient_overshoot(zero_setup):
+    args, clock = zero_setup
+    args.robot_model = "b601_rs"
+    args.exit_zero_tolerance_deg = .5
+    started = clock.now
+    robot = FollowingRobot(follow=False)
+
+    def coupled_feedback():
+        t = clock.now - started
+        q3 = 1.7 if t < .7 else max(.3, 1.7 - (t - .7) * (1.4 / .3))
+        q4 = min(.67, .02 + max(0., t - .9) * (.65 / .4))
+        if t > 2.:
+            q4 = max(.45, .67 - .035 * (t - 2.))
+        return observation([0., .2, q3, q4, 0., 0.])
+
+    robot.get_observation = coupled_feedback
+    # Global error briefly reaches ~0.3 before q4 rises to 0.67, then recovers.
+    # An all-time minimum would abort after 5s even though q4 is improving.
+    assert run_zero(robot, args)
+    assert 7.3 <= clock.now - started <= 8.
+
+
+def test_recent_joint_progress_does_not_let_one_axis_mask_a_stalled_axis():
+    monitor = safety.JointProgressWindow(np.deg2rad(.5), 5., np.deg2rad(.025))
+    for i in range(51):
+        stalled = monitor.update(np.deg2rad([0., 10. - i * .1, .6, 0., 0., 0.]), i * .1)
+    assert stalled == [2]
+
+
+def test_recent_joint_progress_rejects_sustained_divergence():
+    monitor = safety.JointProgressWindow(np.deg2rad(.5), 5., np.deg2rad(.025))
+    for i in range(51):
+        stalled = monitor.update(np.deg2rad([0., 0., .6 + i * .01, 0., 0., 0.]), i * .1)
+    assert stalled == [2]
+
+
+def test_old_progress_expires_when_axis_stops_improving():
+    monitor = safety.JointProgressWindow(np.deg2rad(.5), 5., np.deg2rad(.025))
+    failures = []
+    for i in range(101):
+        t = i * .1
+        stalled = monitor.update(np.deg2rad([0., 0., max(.7, 1. - t * .1), 0., 0., 0.]), t)
+        if stalled:
+            failures.append(t)
+    assert failures
+    assert 7. <= failures[0] <= 8.1

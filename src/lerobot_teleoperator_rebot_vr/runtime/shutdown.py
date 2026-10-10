@@ -120,6 +120,12 @@ class ManagedFollower:
                                 request_feedback=self.policy.request_feedback)
         self.shutdown_report = report
         try:
+            prepare = getattr(self.robot, "prepare_disconnect", None)
+            if callable(prepare):
+                prepare()
+        except Exception as exc:
+            self._cleanup_error(report, "prepare disconnect", exc)
+        try:
             if report.disable_requested:
                 self._disable(motors, bus, results)
             else:
@@ -165,7 +171,8 @@ class ManagedFollower:
             if result.joint in motors:
                 try:
                     # Preserve any cached pre-disable fault code for diagnosis.
-                    self._observe(result, self.feedback_reader(motors[result.joint]), None)
+                    self._observe(result, self.feedback_reader(motors[result.joint]), None,
+                                  getattr(self.robot, "status_reports_torque_state", True))
                 except Exception as exc:
                     self._axis_error(result, "get_state before disable", exc)
         for _ in range(self.policy.attempts):
@@ -207,7 +214,8 @@ class ManagedFollower:
                         continue
                     try:
                         sample = self.feedback_reader(motors[result.joint])
-                        self._observe(result, sample, sent_at.get(result.joint))
+                        self._observe(result, sample, sent_at.get(result.joint),
+                                      getattr(self.robot, "status_reports_torque_state", True))
                     except Exception as exc:
                         self._axis_error(result, "get_state", exc)
                 remaining = deadline - time.monotonic()
@@ -216,8 +224,15 @@ class ManagedFollower:
                 time.sleep(min(0.01, remaining))
 
     @staticmethod
-    def _observe(result, sample, sent_ns):
+    def _observe(result, sample, sent_ns, status_reports_torque_state=True):
         state = sample.state
+        if not status_reports_torque_state:
+            result.reason = "RS SDK reports fault bits, not torque state; disable confirmation unavailable"
+            if state is not None:
+                result.cached_status_code = int(state.status_code)
+                if result.cached_status_code not in result.observed_status_codes:
+                    result.observed_status_codes.append(result.cached_status_code)
+            return
         if state is None:
             result.reason = "no state available"
             return
@@ -253,8 +268,12 @@ class ManagedFollower:
 
     def _report(self, report):
         for result in report.motors:
-            status = {0: "DISABLED", 1: "ENABLED"}.get(result.cached_status_code,
-                       f"RAW({result.cached_status_code})")
+            if not getattr(self.robot, "status_reports_torque_state", True):
+                status = ("UNKNOWN" if result.cached_status_code is None else
+                          f"FAULT_BITS(0x{result.cached_status_code:02x})")
+            else:
+                status = {0: "DISABLED", 1: "ENABLED"}.get(result.cached_status_code,
+                           f"RAW({result.cached_status_code})")
             outcome = ("SKIPPED" if not report.disable_requested else
                        "YES" if result.confirmed else "NO")
             log = logger.info if outcome != "NO" else logger.warning

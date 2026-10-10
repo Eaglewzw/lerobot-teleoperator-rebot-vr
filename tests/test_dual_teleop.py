@@ -315,18 +315,26 @@ def test_new_feedback_fault_during_exit_cancels_both_returns(session):
 
 @pytest.mark.parametrize("side", ["left", "right"])
 @pytest.mark.parametrize("buttons", [(True, False), (False, True), (True, True)])
-def test_dual_buttons_match_single_arm_home_zero_and_do_not_cross_control(session, side, buttons):
+@pytest.mark.parametrize("model", ["b601_dm", "b601_rs"])
+def test_dual_buttons_match_single_arm_home_zero_and_do_not_cross_control(session, side, buttons, model):
     from test_cartesian_teleop import FakeKinematics, ImmediateIKWorker, _observation
     session, clock = session
+    kinematics = FakeKinematics()
+    observation = _observation()
+    if model == "b601_rs":
+        from lerobot_teleoperator_rebot_vr.hardware.profiles import RS
+        kinematics.lower_position_limit = np.array(RS.lower_rad)
+        kinematics.upper_position_limit = np.array(RS.upper_rad)
+        observation = _observation(q_deg=(0., 60., 70., 0., 0., 0.), gripper=0.)
     controllers = {s: FullBodyQPIKController(
-        FakeKinematics(), hand_side=s, xr_to_base_rotation=np.eye(3),
-        ik_worker=ImmediateIKWorker(), config=CartesianControlConfig()) for s in ("left", "right")}
+        kinematics, hand_side=s, xr_to_base_rotation=np.eye(3),
+        ik_worker=ImmediateIKWorker(), config=CartesianControlConfig(robot_model=model)) for s in ("left", "right")}
     for s, controller in controllers.items():
-        controller.update(session.sample_for(s), _observation(), .01, now_ns=clock[0])
+        controller.update(session.sample_for(s), observation, .01, now_ns=clock[0])
     clock[0] += 10_000_000
     session.source.feed_bytes(packet(2, buttons={side: buttons}), received_monotonic_ns=clock[0])
     for s, controller in controllers.items():
-        _, status = controller.update(session.sample_for(s), _observation(), .01, now_ns=clock[0])
+        _, status = controller.update(session.sample_for(s), observation, .01, now_ns=clock[0])
         assert status.zero_requested == (s == side and buttons[1])
         assert status.home_requested == (s == side and buttons[0] and not buttons[1])
         if s == side:
@@ -335,26 +343,34 @@ def test_dual_buttons_match_single_arm_home_zero_and_do_not_cross_control(sessio
             if buttons[1]:
                 assert status.gripper_target_deg == controller.config.gripper_closed_deg
         # Holding the button must not repeatedly reset the return trajectory.
-        _, held = controller.update(session.sample_for(s), _observation(), .01, now_ns=clock[0])
+        _, held = controller.update(session.sample_for(s), observation, .01, now_ns=clock[0])
         assert not held.home_requested and not held.zero_requested
 
 
-def test_left_and_right_controller_state_and_gripper_are_independent():
+@pytest.mark.parametrize("model", ["b601_dm", "b601_rs"])
+def test_left_and_right_controller_state_and_gripper_are_independent(model):
     # Exercise the actual controller with the existing deterministic test worker.
     from test_cartesian_teleop import FakeKinematics, ImmediateIKWorker, _observation
     source = BimanualTrackingSource()
     source.feed_bytes(packet(), received_monotonic_ns=1_000_000_000)
+    kinematics = FakeKinematics()
+    observation = _observation()
+    if model == "b601_rs":
+        from lerobot_teleoperator_rebot_vr.hardware.profiles import RS
+        kinematics.lower_position_limit = np.array(RS.lower_rad)
+        kinematics.upper_position_limit = np.array(RS.upper_rad)
+        observation = _observation(q_deg=(0., 60., 70., 0., 0., 0.), gripper=0.)
     controllers = {side: FullBodyQPIKController(
-        FakeKinematics(), hand_side=side, xr_to_base_rotation=np.eye(3),
-        ik_worker=ImmediateIKWorker(), config=CartesianControlConfig()) for side in ("left", "right")}
+        kinematics, hand_side=side, xr_to_base_rotation=np.eye(3),
+        ik_worker=ImmediateIKWorker(), config=CartesianControlConfig(robot_model=model)) for side in ("left", "right")}
     for side, controller in controllers.items():
         sample = replace(getattr(source.latest_pair(), side), primary_button=False)
-        controller.update(sample, _observation(), .01, now_ns=1_000_000_000)
+        controller.update(sample, observation, .01, now_ns=1_000_000_000)
     source.feed_bytes(packet(2, grip=1), received_monotonic_ns=1_010_000_000)
     for side, controller in controllers.items():
         sample = replace(getattr(source.latest_pair(), side), primary_button=False,
                          grip=1 if side == "left" else 0)
-        _, status = controller.update(sample, _observation(), .01, now_ns=1_010_000_000)
+        _, status = controller.update(sample, observation, .01, now_ns=1_010_000_000)
         assert status.state is (TeleopState.ACTIVE if side == "left" else TeleopState.IDLE)
     assert controllers["left"].gripper is not controllers["right"].gripper
     assert controllers["left"].worker is not controllers["right"].worker

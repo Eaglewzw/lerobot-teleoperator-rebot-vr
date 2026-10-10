@@ -1,0 +1,148 @@
+# B601-RS single arm, SocketCAN + MIT. Experimental moderate-speed profile.
+# Run lerobot-calibrate with the same robot_id before VR startup.
+# Trigger endpoints measured after closed-position zeroing on this RS arm.
+# Automatic startup pose and normal Ctrl+C zero return enabled; disable after verified zero return.
+motor_control_mode: mit
+robot:
+  robot_model: b601_rs
+  rs_zero_confirmed: false
+  gripper_enabled: true
+  robot_port: can0
+  robot_id: rebot_b601_rs_vr
+  calibration_dir: null
+  can_adapter: socketcan
+  dm_serial_baud: 921600
+  no_calibrate: false
+vr_source:
+  hand: right
+  host: 0.0.0.0
+  port: 63901
+cartesian_mapping:
+  linear_ff_max_speed_m_s: 0.1
+  linear_ff_max_acceleration_m_s2: 0.3
+  linear_ff_max_deceleration_m_s2: 4.0
+  linear_ff_brake_confirm_s: 0.03
+  linear_ff_jump_speed_m_s: 1.0
+  linear_ff_jump_slack_m: 0.005
+  position_scale: 1.0
+  orientation_scale: 1.0
+  position_filter_hz: 0.0
+  orientation_filter_hz: 0.0
+  position_deadband_m: 0.0008
+  orientation_deadband_deg: 0.0003
+qp_ik:
+  split_contour_mode: motion
+  qp_use_sent_velocity: false
+  split_contour_weight: 1.0
+  split_contour_speed_gate: false
+  split_reference_speed_m_s: 0.0
+  split_reference_acceleration_m_s2: 1.5
+  qp_solver: scipy
+  qp_position_cost: 20.0
+  qp_position_gain: 3.0
+  qp_orientation_gain: 5.0
+  qp_damping: 0.001
+  qp_damping_max: 0.1
+  qp_smoothness_cost: 0.05
+  qp_posture_cost: 0.01
+  singularity_threshold: 0.08
+  singularity_critical_threshold: 0.02
+  singularity_characteristic_length_m: 0.3
+  joint_limit_margin_deg: 2.0
+  qp_max_solve_time_ms: 8.0
+  urdf: null
+motion_limits:
+  max_joint_speed_rad_s: 1.0
+  max_joint_acceleration_rad_s2: 2.0
+  wrist_speed_rad_s: 1.0
+  wrist_acceleration_rad_s2: 2.0
+  max_relative_target_deg: 3.0
+  wrist_relative_target_deg: 3.0
+  arm_command_lookahead_ms: 50.0
+  wrist_command_lookahead_ms: 50.0
+mit:
+  # Arm gains: Seeed-Projects/lerobot-robot-seeed-b601
+  # commit 0da1a1a5575905d77823227003ffee7672059780,
+  # config_seeed_b601_rs_follower.py gravity_mit_kp / gravity_mit_kd.
+  # Select the gravity-compensated set because mit_gravity_scale is 1.0 here.
+  mit_q1_reference_error_deg: 0.0
+  mit_arm_reference_error_deg: 0.0
+  mit_kp:
+  - 50.0
+  - 50.0
+  - 50.0
+  - 30.0
+  - 50.0
+  - 50.0
+  mit_kd:
+  - 3.0
+  - 5.0
+  - 5.0
+  - 3.0
+  - 4.0
+  - 4.0
+  mit_torque_limit_nm:
+  - 12.0
+  - 12.0
+  - 12.0
+  - 3.0
+  - 3.0
+  - 3.0
+  mit_gravity_scale: 1.0
+  mit_gravity_ramp_s: 1.5
+  mit_dynamics_urdf: null
+startup:
+  initial_q:
+  - 0.0
+  - 0.8
+  - 0.8
+  - 0.0
+  - 0.0
+  - 0.0
+  move_to_initial: true
+  initial_move_tolerance_deg: 3.0
+  exit_zero_tolerance_deg: 0.5
+  initial_move_timeout: 30.0
+  initial_stall_timeout: 5.0
+  exit_zero_stall_timeout: null  # Inherit initial_stall_timeout.
+  initial_feedback_request_hz: 20.0
+  return_to_zero_on_exit: true
+  exit_zero_speed_rad_s: 0.5
+  exit_zero_acceleration_rad_s2: 1.0
+gripper:
+  gripper_control_mode: mit
+  gripper_torque_ratio: 0.2
+  # Keep direct motor PD hold gains: upstream gripper gains belong to a
+  # software impedance/torque-limited controller, not this command path.
+  gripper_mit_kp: 5.0
+  gripper_mit_kd: 0.3
+  # Full-open probe 20261010_100311_175854: 310.131, 310.122, 310.118 deg.
+  gripper_open_deg: 310.12
+  gripper_closed_deg: 0.0
+  # RS MIT sends the shaped velocity as well as position; brake near endpoints.
+  gripper_max_speed_deg_s: 300.0
+  gripper_max_acceleration_deg_s2: 1200.0
+  # Independent of the 3-deg arm window. The previous inherited window
+  # saturated at 2.7 deg / 0.236 Nm without opening in rs_gripper_check.csv.
+  # Controller uses 90%: 10.8 deg * Kp 5 = 0.942 Nm position term.
+  # This is not a measured or total motor torque limit.
+  gripper_relative_target_deg: 12.0
+safety:
+  stale_timeout: 0.2
+  grip_press: 0.6
+  grip_release: 0.4
+  feedback_fault_max_consecutive: 5
+  feedback_fault_settle_time: 0.25
+  # Encoder zero alone cannot prove the arm is mechanically supported.
+  # Disable after verified zero return; support the arm before exit.
+  disable_torque_on_disconnect: true
+  disable_attempts: 3
+  disable_interval_s: 0.02
+  disable_feedback_wait_s: 0.1
+  disable_request_feedback: true
+runtime:
+  fps: 50.0
+  duration: 0.0
+  status_rate: 5.0
+  csv_log: null
+  log_level: INFO

@@ -10,7 +10,7 @@ from typing import Any
 
 import numpy as np
 
-from ..constants import ARM_EFFORT_LIMIT_NM
+from ..hardware.profiles import arm_profile
 from .dynamics import B601GravityCompensator
 from .joint_command import braking_velocity_bounds
 from ..diagnostics.velocity import vector_fields
@@ -54,8 +54,16 @@ class MITCommandDispatcher:
         gravity_scale: float = 1.0,
         gravity_ramp_s: float = 1.0,
         dynamics_urdf: str | Path | None = None,
+        robot_model: str = "b601_dm",
+        gripper_velocity_limit_deg_s: float = 0.0,
     ) -> None:
         self.robot = robot
+        if not np.isfinite(gripper_velocity_limit_deg_s) or gripper_velocity_limit_deg_s < 0:
+            raise ValueError("MIT gripper velocity limit must be finite and non-negative")
+        # Opt in for RS only. DM retains its existing zero-velocity PD path.
+        self.gripper_velocity_limit_deg_s = (
+            float(gripper_velocity_limit_deg_s) if robot_model == "b601_rs" else 0.0)
+        self.last_gripper_velocity_deg_s = 0.0
         self.kp = _six_vector(kp, "MIT Kp", allow_zero=True)
         self.kd = _six_vector(kd, "MIT Kd", allow_zero=True)
         self.torque_limit_nm = _six_vector(
@@ -114,10 +122,12 @@ class MITCommandDispatcher:
             raise ValueError(f"MIT Kp cannot exceed {MIT_KP_MAX:g}")
         if np.any(self.kd > MIT_KD_MAX):
             raise ValueError(f"MIT Kd cannot exceed {MIT_KD_MAX:g}")
-        if np.any(self.torque_limit_nm > ARM_EFFORT_LIMIT_NM):
+        profile = arm_profile(robot_model)
+        effort_limit = profile.effort_nm
+        if np.any(self.torque_limit_nm > effort_limit):
             raise ValueError(
                 "MIT torque limits cannot exceed URDF effort limits "
-                f"{list(ARM_EFFORT_LIMIT_NM)} Nm"
+                f"{list(effort_limit)} Nm"
             )
         if not np.isfinite(gravity_scale) or not 0.0 <= gravity_scale <= 2.0:
             raise ValueError("MIT gravity scale must be finite and in [0, 2]")
@@ -142,8 +152,12 @@ class MITCommandDispatcher:
         if np.any(self.joint_safe_lower_rad >= self.joint_safe_upper_rad):
             raise ValueError("MIT joint limit margin leaves no usable range")
         self.gravity_scale = float(gravity_scale)
+        from .zero_trim import ZeroPoseTrim
+        self.zero_trim = ZeroPoseTrim(self.torque_limit_nm) if robot_model == "b601_rs" else None
         self.gravity_ramp_s = float(gravity_ramp_s)
-        self.gravity = B601GravityCompensator(dynamics_urdf)
+        self.gravity = B601GravityCompensator(
+            profile.model_path(dynamics=True) if dynamics_urdf is None else dynamics_urdf
+        )
         self._latest_observation: dict[str, Any] = {}
         self._target_velocity_rad_s = np.zeros(6, dtype=np.float64)
         self._input_velocity_rad_s = np.zeros(6, dtype=np.float64)
@@ -174,6 +188,10 @@ class MITCommandDispatcher:
 
     def set_observation(self, observation: dict[str, Any]) -> None:
         self._latest_observation = dict(observation)
+
+    def set_zero_return(self, active: bool) -> None:
+        if self.zero_trim is not None:
+            self.zero_trim.active = active
 
     def set_arm_velocity(self, velocity_rad_s: np.ndarray | None) -> None:
         if velocity_rad_s is None:
@@ -237,7 +255,12 @@ class MITCommandDispatcher:
             "mit_velocity_step_dt_s": self._velocity_step_dt_s,
         }
 
-    def send_action(self, action: dict[str, float]) -> dict[str, float]:
+    def send_action(self, action: dict[str, float], *,
+                    gripper_velocity_deg_s: float = 0.0) -> dict[str, float]:
+        # Velocity belongs to this action only: startup, return and HOLD cannot
+        # accidentally reuse the previous teleoperation velocity.
+        if not np.isfinite(gripper_velocity_deg_s):
+            raise ValueError("MIT gripper velocity must be finite")
         goal_deg = {
             key.removesuffix(".pos"): float(value)
             for key, value in action.items()
@@ -316,8 +339,14 @@ class MITCommandDispatcher:
             for index, name in enumerate(ARM_JOINT_NAMES):
                 if self.velocity_aligned_axes[index]:
                     goal_deg[name] = float(aligned_position_deg[index])
+        requested_gripper_deg = goal_deg[GRIPPER_NAME]
         goal_deg = self._clip_joint_limits(goal_deg)
         goal_deg = self._clip_relative_target(goal_deg)
+        gripper_velocity_deg_s = float(np.clip(gripper_velocity_deg_s,
+            -self.gripper_velocity_limit_deg_s, self.gripper_velocity_limit_deg_s))
+        if not math.isclose(goal_deg[GRIPPER_NAME], requested_gripper_deg, abs_tol=1e-8):
+            # Hardware-level clipping overrides the already shaped trajectory.
+            gripper_velocity_deg_s = 0.0
         if self.arm_reference_rad is not None:
             # Re-anchor the reference to what was actually sent so a binding
             # limit clip cannot wind the integrator up behind the boundary.
@@ -338,15 +367,18 @@ class MITCommandDispatcher:
             else min(1.0, (now_s - self._first_command_s) / self.gravity_ramp_s)
         )
         gravity_torque = self.gravity.gravity_torque(q_actual_rad)
+        zero_trim = (np.zeros(6) if self.zero_trim is None else self.zero_trim.update(
+            q_actual_rad, np.deg2rad([goal_deg[name] for name in ARM_JOINT_NAMES]), now_s))
         feedforward = np.clip(
-            gravity_torque * self.gravity_scale * ramp,
+            gravity_torque * self.gravity_scale * ramp + zero_trim,
             -self.torque_limit_nm,
             self.torque_limit_nm,
         )
         self.last_gravity_torque_nm = gravity_torque
         self.last_feedforward_torque_nm = feedforward
 
-        return self._send_goal(goal_deg, self._desired_velocity_rad_s, feedforward)
+        return self._send_goal(goal_deg, self._desired_velocity_rad_s, feedforward,
+                               gripper_velocity_deg_s=gripper_velocity_deg_s)
 
     def send_feedback_hold(self) -> dict[str, float]:
         """Repeat the last bounded command at zero velocity without fresh feedback.
@@ -360,7 +392,7 @@ class MITCommandDispatcher:
         return self._send_goal(self._last_sent_goal_deg, np.zeros(6),
                                self.last_feedforward_torque_nm)
 
-    def _send_goal(self, goal_deg, velocity, feedforward):
+    def _send_goal(self, goal_deg, velocity, feedforward, *, gripper_velocity_deg_s=0.0):
         if self.q1_error_limit_rad > 0 and self._velocity_aligned_position:
             actual = math.radians(self._feedback_deg(ARM_JOINT_NAMES[0]))
             dt = self._velocity_step_dt_s or 0.0
@@ -385,7 +417,7 @@ class MITCommandDispatcher:
                 float(self.kd[index]),
                 float(feedforward[index]),
             )
-        self._send_gripper(goal_deg[GRIPPER_NAME])
+        self._send_gripper(goal_deg[GRIPPER_NAME], gripper_velocity_deg_s)
         self._last_sent_goal_deg = dict(goal_deg)
         return {f"{name}.pos": value for name, value in goal_deg.items()}
 
@@ -456,16 +488,17 @@ class MITCommandDispatcher:
             )
         return result
 
-    def _send_gripper(self, position_deg: float) -> None:
+    def _send_gripper(self, position_deg: float, velocity_deg_s: float = 0.0) -> None:
         motor = self.robot.motors[GRIPPER_NAME]
         if self.config.gripper_control_mode == "mit":
             motor.send_mit(
                 math.radians(position_deg),
-                0.0,
+                math.radians(velocity_deg_s),
                 float(self.config.gripper_mit_kp),
                 float(self.config.gripper_mit_kd),
                 0.0,
             )
+            self.last_gripper_velocity_deg_s = velocity_deg_s
             return
         index = self.robot.motor_names.index(GRIPPER_NAME)
         velocity_deg_s = self.config.pos_vel_velocity

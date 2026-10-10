@@ -77,9 +77,11 @@ class GripperController:
         feedback_error_deg: float | None,
         shape_fn: Callable[..., tuple[np.ndarray, np.ndarray]],
         bound_fn: Callable[..., np.ndarray],
+        smooth_motion: bool = False,
     ) -> None:
         lower_deg = min(open_deg, closed_deg)
         upper_deg = max(open_deg, closed_deg)
+        previous_command_deg = self.command_deg
         position, velocity = shape_fn(
             previous_position=np.array([self.command_deg]),
             previous_velocity=np.array([self.velocity_deg_s]),
@@ -89,6 +91,7 @@ class GripperController:
             max_acceleration=np.array([max_acceleration_deg_s2]),
             lower_limit=np.array([lower_deg]),
             upper_limit=np.array([upper_deg]),
+            **({"brake_at_target": True} if smooth_motion else {}),
         )
         self.command_deg = float(position[0])
         self.velocity_deg_s = float(velocity[0])
@@ -106,4 +109,11 @@ class GripperController:
             )[0]
         )
         if self.command_deg != unclipped_command_deg:
-            self.velocity_deg_s = 0.0
+            # Keep the rate actually achieved after clipping. Resetting to
+            # zero on every contact with a moving feedback bound creates a
+            # repeated accelerate-stop cycle even with steady Trigger input.
+            self.velocity_deg_s = (
+                float(np.clip((self.command_deg - previous_command_deg) / dt_s,
+                              -max_speed_deg_s, max_speed_deg_s))
+                if smooth_motion and dt_s > 0. else 0.0
+            )

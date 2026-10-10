@@ -57,6 +57,7 @@ def update_arm_position_command(
             ),
             lower_limit=lower_limit_rad,
             upper_limit=upper_limit_rad,
+            **({"brake_at_target": True} if config.robot_model == "b601_rs" else {}),
         )
 
     if config.max_command_feedback_error_deg is None:

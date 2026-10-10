@@ -344,6 +344,26 @@ def test_primary_button_edge_returns_home_and_requires_grip_release() -> None:
     assert rearmed.state is TeleopState.ACTIVE
 
 
+def test_button_zero_survives_tracking_loss_but_new_grip_cancels_return():
+    controller = FullBodyQPIKController(FakeKinematics(),
+        xr_to_base_rotation=DEFAULT_XR_TO_WORLD,
+        config=CartesianControlConfig(stale_timeout_s=.2), ik_worker=ImmediateWorker())
+    now = time.monotonic_ns()
+    obs = _observation(q=np.array([10., -60., -70., 20., -30., 40.]))
+    controller.update(_legacy_frame(now), obs, .02, now_ns=now)
+    _, status = controller.update(_legacy_frame(now+1, secondary_button=True), obs, .02, now_ns=now+1)
+    assert status.return_target == "zero"
+    _, paused = controller.update(None, obs, .02, now_ns=now+300_000_000)
+    assert paused.return_target == "zero"
+    assert paused.target_deg[:6] == pytest.approx([obs[f"{j}.pos"] for j in ARM_JOINT_NAMES])
+    now += 400_000_000
+    _, resumed = controller.update(_legacy_frame(now), obs, .02, now_ns=now)
+    assert resumed.target_deg[:6] == pytest.approx(np.zeros(6))
+    _, active = controller.update(_legacy_frame(now+1, squeeze=1.), obs, .02, now_ns=now+1)
+    assert active.state is TeleopState.ACTIVE
+    assert active.return_target == ""
+
+
 def test_secondary_button_edge_returns_zero_smoothly_and_requires_grip_release() -> None:
     worker = ImmediateWorker()
     controller = FullBodyQPIKController(

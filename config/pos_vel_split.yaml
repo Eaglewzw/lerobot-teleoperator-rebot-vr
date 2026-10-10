@@ -4,6 +4,10 @@ motor_control_mode: pos_vel
 
 # 机器人
 robot:
+  calibration_dir: null
+  robot_model: b601_dm
+  rs_zero_confirmed: false
+  gripper_enabled: true
   robot_port: /dev/ttyACM0
   robot_id: rebot_b601_vr
   can_adapter: damiao
@@ -73,6 +77,7 @@ startup:
   exit_zero_tolerance_deg: 2.0  # Independent of startup tolerance.
   initial_move_timeout: 30.0
   initial_stall_timeout: 5.0
+  exit_zero_stall_timeout: null  # Inherit initial_stall_timeout.
   initial_feedback_request_hz: 20.0  # 0: 不限频
   return_to_zero_on_exit: true
   exit_zero_speed_rad_s: 0.5

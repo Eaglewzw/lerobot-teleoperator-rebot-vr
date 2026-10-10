@@ -67,7 +67,7 @@ def _typed_value(action, value):
             raise ValueError(f"{action.dest} must be a YAML boolean")
         return value
     if value is None:
-        if action.default is not None:
+        if action.default is not None and action.dest not in {"gripper_open_deg", "gripper_closed_deg"}:
             raise ValueError(f"{action.dest} cannot be null")
         return None
     values = value if isinstance(action.nargs, int) else [value]
@@ -159,9 +159,31 @@ def load_dual_config(path: Path) -> DualConfig:
         if heartbeat < 3.0 / args.fps:
             raise ValueError("heartbeat_timeout_s must allow at least three control cycles")
         parsed[side] = args
+    if parsed["left"].robot_model != parsed["right"].robot_model:
+        raise ValueError("both arms must use the same robot_model (two DM or two RS arms)")
     if parsed["left"].robot_id == parsed["right"].robot_id:
         raise ValueError("left and right robot_id must differ (independent calibration)")
     left, right = parsed["left"].robot_port, parsed["right"].robot_port
     if left == right or Path(left).resolve() == Path(right).resolve():
         raise ValueError("left and right must use different CAN adapters")
     return DualConfig(host, port, duration, heartbeat, parsed)
+
+
+def validate_dual_rs_calibration(config: DualConfig) -> None:
+    """Check both RS records before starting either CAN worker or the VR source.
+
+    Keep the per-arm check too: a record could be invalidated between here and
+    connection. --no-calibrate cannot bypass the RS zero prerequisite.
+    """
+    from ..hardware.rs_calibration import RSCalibrationStore
+
+    for side, args in config.arms.items():
+        if args.robot_model != "b601_rs" or args.rs_zero_confirmed:
+            continue
+        store = RSCalibrationStore(args.robot_id, args.calibration_dir)
+        if not store.load():
+            raise ValueError(
+                f"{side} RS zeros are unconfirmed; no arms started. Run lerobot-calibrate "
+                f"--robot.type=rebot_b601_rs_follower --robot.port={args.robot_port} "
+                f"--robot.id={args.robot_id}; expected record: {store.path}"
+            )

@@ -15,7 +15,8 @@ import yaml
 
 from ..vr.adapter import sample_is_fresh
 from ..vr.xr_v1 import BimanualSample, BimanualTrackingSource
-from .dual_config import DualConfig, load_dual_config, startup_zero_test_config
+from .dual_config import (DualConfig, load_dual_config, startup_zero_test_config,
+                          validate_dual_rs_calibration)
 from .real import ArmRuntime
 
 
@@ -207,6 +208,7 @@ class DualArmSession:
             return replace(sample, stream_epoch=self._generation)
 
     def run(self, runtime_factory=ArmRuntime):
+        validate_dual_rs_calibration(self.config)
         errors = {}
         error_lock = threading.Lock()
 

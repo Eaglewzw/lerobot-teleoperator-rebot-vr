@@ -60,6 +60,8 @@ def _dispatcher(
     joint_limit_margin_rad: float = 0.0,
     q1_reference_error_deg: float = 0.0,
     arm_reference_error_deg: float = 0.0,
+    robot_model: str = "b601_dm",
+    gripper_velocity_limit_deg_s: float = 0.0,
 ) -> MITCommandDispatcher:
     return MITCommandDispatcher(
         robot,
@@ -74,7 +76,33 @@ def _dispatcher(
         q1_reference_error_deg=q1_reference_error_deg,
         arm_reference_error_deg=arm_reference_error_deg,
         gravity_ramp_s=0.0,
+        robot_model=robot_model,
+        gripper_velocity_limit_deg_s=gripper_velocity_limit_deg_s,
     )
+
+
+@pytest.mark.parametrize("model,expected", [("b601_rs", 240.), ("b601_dm", 0.)])
+@pytest.mark.parametrize("direction", [-1., 1.])
+def test_gripper_velocity_is_bounded_per_action_and_never_leaks_into_hold(model, expected, direction):
+    robot = _FakeRobot()
+    robot.config.gripper_control_mode = "mit"
+    dispatcher = _dispatcher(robot, robot_model=model, gripper_velocity_limit_deg_s=240.)
+    dispatcher.get_observation()
+    action = dict(robot.observation, **{"gripper.pos": direction * 5.})
+    for hold_kind in ("feedback", "plain_action"):
+        dispatcher.send_action(action, gripper_velocity_deg_s=direction * 900.)
+        assert robot.motors[GRIPPER_NAME].mit_calls[-1][1] == pytest.approx(
+            math.radians(direction * expected))
+        if hold_kind == "feedback":
+            dispatcher.send_feedback_hold()
+        else:
+            dispatcher.send_action(action)  # startup / exit / tracking hold
+        assert robot.motors[GRIPPER_NAME].mit_calls[-1][1] == 0.
+        assert dispatcher.last_gripper_velocity_deg_s == 0.
+    before = len(robot.motors[GRIPPER_NAME].mit_calls)
+    with pytest.raises(ValueError, match="gripper velocity"):
+        dispatcher.send_action(action, gripper_velocity_deg_s=float("nan"))
+    assert len(robot.motors[GRIPPER_NAME].mit_calls) == before
 
 
 def test_packaged_dynamics_model_has_six_joints_and_finite_gravity() -> None:

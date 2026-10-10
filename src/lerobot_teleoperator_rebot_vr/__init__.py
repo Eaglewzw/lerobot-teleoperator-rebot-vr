@@ -3,6 +3,7 @@
 from .control.controller import FullBodyQPIKController
 from .control.types import CartesianControlConfig
 from .config_rebot_vr import RebotVRConfig, RebotVRTeleopConfig
+from .hardware import RebotB601RSFollower, RebotB601RSFollowerConfig
 from .ik.kinematics import B601Kinematics
 from .rebot_vr import RebotVRTeleop
 from .vr.controller import XRoboToolkitV1Controller
@@ -24,6 +25,8 @@ __all__ = [
     "PacketParser",
     "PacketStreamDecoder",
     "RebotVRConfig",
+    "RebotB601RSFollower",
+    "RebotB601RSFollowerConfig",
     "RebotVRTeleop",
     "RebotVRTeleopConfig",
     "FullBodyQPIKController",

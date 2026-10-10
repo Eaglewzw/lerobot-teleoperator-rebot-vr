@@ -44,6 +44,7 @@
 | --- | --- | --- |
 | MIT | `config/mit_split.yaml` | `config/dual_mit_split.yaml` |
 | POS_VEL | `config/pos_vel_split.yaml` | — |
+| RS MIT | `config/rs_mit_split.yaml` | `config/dual_rs_mit_split.yaml` |
 
 * * *
 
@@ -123,6 +124,44 @@ rebot-vr-teleoperate \
 ```
 
 * * *
+
+## B601-RS 单臂（实验性 MIT）
+
+在当前 LeRobot 环境安装本工程后，使用标准校准命令。按官方 RS 零位姿态摆好六轴、
+完全闭合夹爪并可靠支撑，看到 `Press ENTER when ready...` 后按回车。校零后不会自动使能。
+
+```bash
+lerobot-calibrate \
+  --robot.type=rebot_b601_rs_follower \
+  --robot.port=can0 \
+  --robot.id=rebot_b601_rs_vr
+
+rebot-vr-teleoperate \
+  --robot-model b601_rs \
+  --robot-port can0 \
+  --robot-id rebot_b601_rs_vr \
+  --motor-control-mode mit \
+  --control-config config/rs_mit_split.yaml
+```
+
+遥操自动读取相同 ID 的标定记录，无需 `--rs-zero-confirmed`。默认启动自动移动到
+`[0, 0.8, 0.8, 0, 0, 0]` rad，正常运行时按 Ctrl+C 先回零再退出；RS 回零阈值为 0.5°，需稳定到位。
+RS 默认在正常 Ctrl+C 回零验证成功后自动失能，回零失败或中断禁止自动失能；退出前须可靠支撑，保留力矩不能保证通信超时或供电异常时仍可保持。
+Trigger 默认控制夹爪：松开对应全开 310.12°，按到底对应闭合 0°。这些端点来自当前机械臂的实测，
+更换机械臂或改变夹爪零位后需重新测量。详见 [RS 单臂说明](assest/docs/RS_SINGLE_ARM.md)。
+
+## B601-RS 双臂
+
+复用 DM 双臂入口及手柄操作，配置使用 `config/dual_rs_mit_split.yaml`：
+
+```bash
+rebot-vr-teleoperate-dual --config config/dual_rs_mit_split.yaml --dry-run
+```
+
+已确认 `can0` 为左臂，标定 ID 为 `rebot_b601_rs_left`；`can1` 为右臂，
+标定 ID 为 `rebot_b601_rs_right`。两臂分别重新校零，两侧标定检查通过后才会启动 CAN 工作线程。
+两侧夹爪已开启，共用 MIT 参数及运动限制；右侧按用户要求沿用左侧 0°/310.12° 端点，尚未独立实测行程。完整校零、夹爪配置、低速检查及启动命令见
+[RS 双臂说明](assest/docs/RS_DUAL_ARM.md)。
 
 ## 手柄与退出
 

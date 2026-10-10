@@ -16,8 +16,6 @@ from ..vr.tracking import ControllerSample
 from .types import (
     ARM_JOINT_NAMES,
     FEEDBACK_LIMIT_TOLERANCE_RAD,
-    FOLLOWER_LOWER_RAD,
-    FOLLOWER_UPPER_RAD,
     GRIPPER_NAME,
     CartesianControlConfig,
     CartesianControlStatus,
@@ -30,6 +28,7 @@ from .joint_command import (
     shape_joint_position_command,
 )
 from .startup import reference_initial_q_to_dm
+from ..hardware.profiles import arm_profile
 from .status import build_running_status
 
 
@@ -47,6 +46,7 @@ class FullBodyQPIKController:
     ) -> None:
         self.kinematics = kinematics
         self.config = config or CartesianControlConfig()
+        profile = arm_profile(self.config.robot_model)
         self.mapper = RelativePoseMapper(
             side=hand_side,
             xr_to_world=xr_to_base_rotation,
@@ -62,16 +62,24 @@ class FullBodyQPIKController:
         )
         model_lower = np.asarray(kinematics.lower_position_limit, dtype=np.float64)
         model_upper = np.asarray(kinematics.upper_position_limit, dtype=np.float64)
-        self.lower_limit_rad = np.maximum(model_lower, FOLLOWER_LOWER_RAD)
-        self.upper_limit_rad = np.minimum(model_upper, FOLLOWER_UPPER_RAD)
+        follower_lower = np.asarray(profile.lower_rad)
+        follower_upper = np.asarray(profile.upper_rad)
+        self.lower_limit_rad = np.maximum(model_lower, follower_lower)
+        self.upper_limit_rad = np.minimum(model_upper, follower_upper)
         self.feedback_lower_limit_rad = np.maximum(
             self.lower_limit_rad - FEEDBACK_LIMIT_TOLERANCE_RAD,
-            FOLLOWER_LOWER_RAD,
+            follower_lower,
         )
         self.feedback_upper_limit_rad = np.minimum(
             self.upper_limit_rad + FEEDBACK_LIMIT_TOLERANCE_RAD,
-            FOLLOWER_UPPER_RAD,
+            follower_upper,
         )
+        if profile.feedback_tolerance_deg:
+            # RS zero lies on q2/q3's hard boundary. Accept encoder noise in
+            # measurements, then clip the control pose below to hard limits.
+            tolerance = np.deg2rad(profile.feedback_tolerance_deg)
+            self.feedback_lower_limit_rad = self.lower_limit_rad - tolerance
+            self.feedback_upper_limit_rad = self.upper_limit_rad + tolerance
         if ik_worker is not None:
             self.worker = ik_worker
         else:
@@ -145,14 +153,20 @@ class FullBodyQPIKController:
         self._dq_command_rad_s: np.ndarray | None = None
         self._primary_button_down = False
         self._secondary_button_down = False
+        self._return_target: str = ""
         self._feedback_fault_count = 0
         self._last_valid_q_actual_rad: np.ndarray | None = None
         self._last_valid_gripper_actual_deg: float | None = None
-        self.home_q_rad = reference_initial_q_to_dm(
-            self.config.initial_q_rad,
-            lower_limit_rad=self.lower_limit_rad,
-            upper_limit_rad=self.upper_limit_rad,
-        )
+        if self.config.robot_model == "b601_dm":
+            self.home_q_rad = reference_initial_q_to_dm(
+                self.config.initial_q_rad,
+                lower_limit_rad=self.lower_limit_rad,
+                upper_limit_rad=self.upper_limit_rad,
+            )
+        else:
+            self.home_q_rad = np.asarray(self.config.initial_q_rad, dtype=float).copy()
+            if np.any(self.home_q_rad < self.lower_limit_rad) or np.any(self.home_q_rad > self.upper_limit_rad):
+                raise ValueError("initial-q is outside RS model limits")
         self.zero_q_rad = np.zeros(6, dtype=np.float64)
 
     def start(self) -> None:
@@ -200,6 +214,7 @@ class FullBodyQPIKController:
             self.gripper.synchronize_to_feedback(gripper_actual_deg)
 
         if recovering_feedback:
+            self._return_target = ""
             self.mapper.reset(require_release=True)
             self._begin_generation()
             self._q_goal_rad = q_control_actual_rad.copy()
@@ -267,6 +282,7 @@ class FullBodyQPIKController:
             if not return_requested and not recovering_feedback:
                 self._begin_generation()
             if mapping.state is TeleopState.ACTIVE:
+                self._return_target = ""
                 self._q_goal_rad = q_control_actual_rad.copy()
                 # A Grip session starts from the measured posture. Synchronize
                 # the shaped command and clear velocity so activation cannot
@@ -291,14 +307,22 @@ class FullBodyQPIKController:
 
         if return_requested:
             self._begin_generation()
+            self._return_target = "zero" if zero_requested else "home"
             target = self.zero_q_rad if zero_requested else self.home_q_rad
             self._q_goal_rad = target.copy()
-            if zero_requested:
+            if zero_requested and self.config.gripper_enabled:
                 # B/Y returns the complete robot to zero and disarms Trigger,
                 # so analog noise cannot overwrite the closed gripper target.
                 self.gripper.request_closed(
                     self.config.gripper_closed_deg, trigger
                 )
+
+        # Loss of tracking pauses a button return, but must not erase its goal.
+        # Fresh IDLE resumes it; a new Grip session or feedback fault cancels it.
+        if self._return_target and mapping.state is TeleopState.IDLE:
+            self._q_goal_rad = (
+                self.zero_q_rad if self._return_target == "zero" else self.home_q_rad
+            ).copy()
 
         consumed_before_ns = self.qp.last_result_consumed_monotonic_ns
         accepted_before_ns = self.qp.last_result_accepted_monotonic_ns
@@ -346,12 +370,13 @@ class FullBodyQPIKController:
 
         command_shaping_started_ns = time.monotonic_ns()
         tracking_fresh = mapping.state in (TeleopState.IDLE, TeleopState.ACTIVE)
-        self.gripper.update_trigger_target(
-            tracking_fresh=tracking_fresh,
-            trigger=trigger,
-            open_deg=self.config.gripper_open_deg,
-            closed_deg=self.config.gripper_closed_deg,
-        )
+        if self.config.gripper_enabled:
+            self.gripper.update_trigger_target(
+                tracking_fresh=tracking_fresh,
+                trigger=trigger,
+                open_deg=self.config.gripper_open_deg,
+                closed_deg=self.config.gripper_closed_deg,
+            )
 
         self._q_command_rad, self._dq_command_rad_s = update_arm_position_command(
             previous_position_rad=self._q_command_rad,
@@ -373,19 +398,21 @@ class FullBodyQPIKController:
                 if self.config.gripper_command_feedback_error_deg is None
                 else self.config.gripper_command_feedback_error_deg
             )
-        self.gripper.update_command(
-            actual_deg=gripper_actual_deg,
-            dt_s=dt_s,
-            open_deg=self.config.gripper_open_deg,
-            closed_deg=self.config.gripper_closed_deg,
-            max_speed_deg_s=self.config.gripper_max_speed_deg_s,
-            max_acceleration_deg_s2=(
-                self.config.gripper_max_acceleration_deg_s2
-            ),
-            feedback_error_deg=gripper_feedback_error_deg,
-            shape_fn=shape_joint_position_command,
-            bound_fn=bound_position_command_to_feedback,
-        )
+        if self.config.gripper_enabled:
+            self.gripper.update_command(
+                actual_deg=gripper_actual_deg,
+                dt_s=dt_s,
+                open_deg=self.config.gripper_open_deg,
+                closed_deg=self.config.gripper_closed_deg,
+                max_speed_deg_s=self.config.gripper_max_speed_deg_s,
+                max_acceleration_deg_s2=(
+                    self.config.gripper_max_acceleration_deg_s2
+                ),
+                feedback_error_deg=gripper_feedback_error_deg,
+                shape_fn=shape_joint_position_command,
+                bound_fn=bound_position_command_to_feedback,
+                smooth_motion=self.config.robot_model == "b601_rs",
+            )
 
         command_deg = np.rad2deg(self._q_command_rad)
         action = {
@@ -419,6 +446,7 @@ class FullBodyQPIKController:
         controller_finished_ns = time.monotonic_ns()
         status = replace(
             status,
+            return_target=self._return_target,
             ik_result_consumed_this_cycle=(
                 self.qp.last_result_consumed_monotonic_ns is not None
                 and self.qp.last_result_consumed_monotonic_ns
@@ -454,6 +482,7 @@ class FullBodyQPIKController:
     ) -> tuple[dict[str, float] | None, CartesianControlStatus]:
         self._feedback_fault_count += 1
         if self._feedback_fault_count == 1:
+            self._return_target = ""
             self.mapper.reset(require_release=True)
             self._begin_generation()
             self.gripper.enter_feedback_hold(

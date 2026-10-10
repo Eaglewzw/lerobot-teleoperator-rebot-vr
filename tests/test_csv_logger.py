@@ -76,6 +76,11 @@ def test_build_csv_row_flattens_seven_joint_status_and_diagnostics() -> None:
 
     assert tuple(row) == CSV_FIELDNAMES
     assert row["teleop_state"] == "active"
+    assert row["tracking"] is True
+    assert row["feedback_valid"] is True
+    assert row["trigger"] == .25
+    assert row["gripper_trigger_active"] is True
+    assert row["sent_gripper_deg"] == ""
     assert row["ik_mode"] == "split"
     assert row["wrist_clip_deg"] == ""
     assert row["ik_success"] is True

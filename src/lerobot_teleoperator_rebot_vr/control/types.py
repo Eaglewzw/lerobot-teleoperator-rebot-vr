@@ -12,6 +12,7 @@ from ..constants import (
     GRIPPER_NAME,
 )
 from ..ik.async_worker import IKRequest, IKResult
+from ..hardware.profiles import arm_profile
 from ..vr.pose_mapping import TeleopState
 
 
@@ -39,6 +40,8 @@ class IKWorker(Protocol):
 
 @dataclass(frozen=True)
 class CartesianControlConfig:
+    robot_model: str = "b601_dm"
+    gripper_enabled: bool = True
     qp_solver: str = "scipy"
     qp_position_cost: float = 20.0
     qp_position_gain: float = 10.0
@@ -94,13 +97,14 @@ class CartesianControlConfig:
         0.0,
         0.0,
     )
-    gripper_open_deg: float = -180.0
-    gripper_closed_deg: float = 0.0
+    gripper_open_deg: float | None = -180.0
+    gripper_closed_deg: float | None = 0.0
     gripper_max_speed_deg_s: float = 90.0
     gripper_max_acceleration_deg_s2: float = 360.0
     max_command_feedback_error_deg: float | None = None
 
     def __post_init__(self) -> None:
+        arm_profile(self.robot_model)
         if self.qp_solver not in ("scipy", "osqp"):
             raise ValueError("qp_solver must be scipy or osqp")
         non_negative = np.asarray(
@@ -204,10 +208,13 @@ class CartesianControlConfig:
         initial_q = np.asarray(self.initial_q_rad, dtype=np.float64)
         if initial_q.shape != (6,) or not np.all(np.isfinite(initial_q)):
             raise ValueError("initial_q_rad must contain six finite values")
-        if not np.all(
-            np.isfinite((self.gripper_open_deg, self.gripper_closed_deg))
-        ) or self.gripper_open_deg >= self.gripper_closed_deg:
-            raise ValueError("gripper positions must be finite with open < closed")
+        if self.gripper_enabled:
+            if (self.gripper_open_deg is None or self.gripper_closed_deg is None or
+                    not np.all(np.isfinite((self.gripper_open_deg, self.gripper_closed_deg)))):
+                raise ValueError("gripper positions must be finite")
+            if (self.gripper_open_deg == self.gripper_closed_deg or
+                    (self.robot_model == "b601_dm" and self.gripper_open_deg > self.gripper_closed_deg)):
+                raise ValueError("gripper positions must differ (DM requires open < closed)")
         if (
             self.max_command_feedback_error_deg is not None
             and (
@@ -243,6 +250,8 @@ class CartesianControlStatus:
     command_deg: np.ndarray
     orientation_error_deg: float | None
     ik_mode: str = "split"
+    gripper_velocity_deg_s: float = 0.0
+    return_target: str = ""
     wrist_clip_deg: float | None = None
     sigma_min: float | None = None
     condition_number: float | None = None

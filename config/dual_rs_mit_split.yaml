@@ -1,0 +1,58 @@
+# Two upright RS arms, parallel and facing the same direction.
+# User-confirmed mapping: can0 = left, can1 = right. Check after USB replug/reboot.
+# Each bus uses motor IDs 1..7; the two calibration records must be independent.
+# Relative paths are resolved against this YAML's directory.
+vr:
+  host: 0.0.0.0
+  port: 63901
+arms:
+  left:
+    hand: left
+    robot_port: can0
+    # Recalibrate each physical arm under its own left/right ID.
+    robot_id: rebot_b601_rs_left
+    control_config: rs_mit_split.yaml
+    overrides:
+      startup:
+        exit_zero_tolerance_deg: 2.0
+      motion_limits:
+        max_joint_speed_rad_s: 1.5
+        max_joint_acceleration_rad_s2: 3.0
+        wrist_speed_rad_s: 1.5
+        wrist_acceleration_rad_s2: 3.0
+      cartesian_mapping:
+        position_scale: 1.0
+        orientation_scale: 1.0
+      runtime:
+        status_rate: 1.0
+  right:
+    hand: right
+    robot_port: can1
+    robot_id: rebot_b601_rs_right
+    control_config: rs_mit_split.yaml
+    overrides:
+      startup:
+        exit_zero_tolerance_deg: 2.0
+        # Right wrist trim was still ramping at the old 5 s stall deadline.
+        # Only extend exit settling; keep the 30 s total timeout.
+        exit_zero_stall_timeout: 10.0
+      motion_limits:
+        max_joint_speed_rad_s: 1.5
+        max_joint_acceleration_rad_s2: 3.0
+        wrist_speed_rad_s: 1.5
+        wrist_acceleration_rad_s2: 3.0
+      cartesian_mapping:
+        position_scale: 0.5
+        orientation_scale: 0.6
+      robot:
+        # User requested matching the left gripper, including its endpoints.
+        # MIT gains, speed, acceleration and endpoints inherit rs_mit_split.yaml.
+        gripper_enabled: true
+      runtime:
+        status_rate: 1.0
+coordination:
+  fault_policy: hold_both
+runtime:
+  duration: 0.0
+  heartbeat_timeout_s: 0.5
+  log_dir: ../logs/dual_rs

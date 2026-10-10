@@ -3,7 +3,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from lerobot_teleoperator_rebot_vr.diagnostics.motion import cached_motor_row, mit_command_row
+from lerobot_teleoperator_rebot_vr.diagnostics.motion import cached_motor_row, gripper_command_row, mit_command_row
 
 
 def test_cache_snapshot_does_not_request_or_poll_feedback():
@@ -41,3 +41,26 @@ def test_mit_torque_is_labelled_estimate_and_uses_radians():
                           {"actual_velocity_elbow_flex_rad_s": .01})
     assert row["estimated_pd_ff_elbow_flex_nm"] == pytest.approx(30 * np.deg2rad(6.7) - .04 + 1.)
     assert "estimated_pd_ff_shoulder_pan_nm" not in row
+
+
+def test_gripper_diagnostics_distinguish_shaped_sent_and_actual_positions():
+    import math
+    from lerobot_teleoperator_rebot_vr.control.mit import MITCommandDispatcher
+
+    robot = object.__new__(MITCommandDispatcher)
+    robot.robot = SimpleNamespace(config=SimpleNamespace(
+        gripper_control_mode="mit", gripper_mit_kp=5., gripper_mit_kd=.3))
+    robot.last_gripper_velocity_deg_s = -120.
+    status = SimpleNamespace(gripper_command_deg=100., gripper_actual_deg=10.,
+                             feedback_valid=True)
+    row = gripper_command_row(robot, status, {"gripper.pos": 12.7})
+    assert row["mit_desired_velocity_gripper_deg_s"] == -120.
+    assert row["sent_gripper_deg"] == 12.7
+    assert row["gripper_command_sent"] is True
+    assert row["gripper_command_clipped_flag"] is True
+    assert row["estimated_position_effort_gripper_nm"] == pytest.approx(5 * math.radians(2.7))
+    assert row["mit_kp_gripper_nm_rad"] == 5.
+    status.feedback_valid = False
+    assert "estimated_position_effort_gripper_nm" not in gripper_command_row(
+        robot, status, {"gripper.pos": 12.7})
+    assert gripper_command_row(robot, status, None) == {"gripper_command_sent": False}

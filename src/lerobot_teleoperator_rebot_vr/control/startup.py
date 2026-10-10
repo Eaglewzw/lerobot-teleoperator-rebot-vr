@@ -64,6 +64,9 @@ class StartupPoseMover:
         max_command_feedback_error_rad: float | None = None,
         feedback_limit_tolerance_rad: float = np.deg2rad(1.0),
         settle_samples: int = 3,
+        settle_time_s: float = 0.0,
+        settle_speed_rad_s: float | None = None,
+        brake_at_target: bool = False,
     ) -> None:
         self.target_rad = np.asarray(target_rad, dtype=np.float64)
         self.lower_limit_rad = np.asarray(lower_limit_rad, dtype=np.float64)
@@ -78,6 +81,15 @@ class StartupPoseMover:
         )
         self.feedback_limit_tolerance_rad = float(feedback_limit_tolerance_rad)
         self.settle_samples = int(settle_samples)
+        self.settle_time_s = float(settle_time_s)
+        self.settle_speed_rad_s = settle_speed_rad_s
+        self.brake_at_target = brake_at_target
+        if not np.isfinite(self.settle_time_s) or self.settle_time_s < 0:
+            raise ValueError("settle time must be finite and non-negative")
+        if settle_speed_rad_s is not None and (
+            not np.isfinite(settle_speed_rad_s) or settle_speed_rad_s <= 0
+        ):
+            raise ValueError("settle speed must be finite and positive")
         if self.target_rad.shape != (6,):
             raise ValueError("startup target must contain six joint angles")
         if self.settle_samples <= 0:
@@ -95,6 +107,8 @@ class StartupPoseMover:
         self._command_rad: np.ndarray | None = None
         self._velocity_rad_s = np.zeros(6, dtype=np.float64)
         self._settled_samples = 0
+        self._settled_time_s = 0.0
+        self._previous_actual_rad: np.ndarray | None = None
 
     def update(self, actual_rad: np.ndarray, dt_s: float) -> StartupPoseStatus:
         actual_rad = np.asarray(actual_rad, dtype=np.float64)
@@ -134,6 +148,7 @@ class StartupPoseMover:
             max_acceleration=np.full(6, self.max_acceleration_rad_s2),
             lower_limit=self.lower_limit_rad,
             upper_limit=self.upper_limit_rad,
+            brake_at_target=self.brake_at_target,
         )
         if self.max_command_feedback_error_rad is not None:
             self._command_rad = bound_position_command_to_feedback(
@@ -150,15 +165,26 @@ class StartupPoseMover:
         max_command_error = float(np.max(np.abs(self.target_rad - self._command_rad)))
         at_target = (
             max_error <= self.tolerance_rad
-            and max_command_error <= self.tolerance_rad
+            and max_command_error <= (
+                min(self.tolerance_rad, np.deg2rad(0.05))
+                if self.settle_time_s > 0 else self.tolerance_rad
+            )
         )
+        if self.settle_speed_rad_s is not None:
+            at_target = at_target and self._previous_actual_rad is not None and bool(
+                np.max(np.abs(actual_rad - self._previous_actual_rad)) / step_dt_s
+                <= self.settle_speed_rad_s
+            )
+        self._previous_actual_rad = actual_rad.copy()
+        self._settled_time_s = self._settled_time_s + step_dt_s if at_target else 0.0
         self._settled_samples = (
             self._settled_samples + 1 if at_target else 0
         )
         return StartupPoseStatus(
             command_rad=self._command_rad.copy(),
             max_actual_error_rad=max_error,
-            done=self._settled_samples >= self.settle_samples,
+            done=(self._settled_samples >= self.settle_samples
+                  and self._settled_time_s >= self.settle_time_s),
         )
 
 

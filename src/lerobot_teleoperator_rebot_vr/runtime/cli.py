@@ -10,6 +10,7 @@ import numpy as np
 import yaml
 
 from ..constants import ARM_EFFORT_LIMIT_NM
+from ..hardware.profiles import arm_profile
 from ..control.startup import DEFAULT_INITIAL_Q_REFERENCE_RAD
 from ..control.types import CartesianControlStatus
 from .shutdown import ShutdownPolicy
@@ -21,8 +22,8 @@ MODE_CONFIG_FILENAMES = {
 }
 
 
-def _default_mode_config_path(mode: str) -> Path:
-    filename = MODE_CONFIG_FILENAMES[mode]
+def _default_mode_config_path(mode: str, robot_model: str = "b601_dm") -> Path:
+    filename = "rs_mit_split.yaml" if robot_model == "b601_rs" else MODE_CONFIG_FILENAMES[mode]
     candidates = (
         Path(__file__).resolve().parents[3] / "config" / filename,
         Path(sys.prefix)
@@ -70,14 +71,18 @@ class ModeConfigArgumentParser(argparse.ArgumentParser):
         selector.add_argument(
             "--motor-control-mode",
             choices=tuple(MODE_CONFIG_FILENAMES),
-            default="pos_vel",
+            default=None,
         )
+        selector.add_argument("--robot-model", choices=("b601_dm", "b601_rs"), default="b601_dm")
         selector.add_argument("--control-config", type=Path, default=None)
         selected, _ = selector.parse_known_args(arguments)
+        selected.motor_control_mode = selected.motor_control_mode or (
+            "mit" if selected.robot_model == "b601_rs" else "pos_vel"
+        )
         config_path = (
             selected.control_config
             if selected.control_config is not None
-            else _default_mode_config_path(selected.motor_control_mode)
+            else _default_mode_config_path(selected.motor_control_mode, selected.robot_model)
         )
 
         try:
@@ -98,6 +103,8 @@ class ModeConfigArgumentParser(argparse.ArgumentParser):
                 + ", ".join(unknown)
             )
         configured_mode = config_defaults.get("motor_control_mode")
+        if config_defaults.get("robot_model", "b601_dm") != selected.robot_model:
+            self.error("control config robot_model does not match --robot-model")
         if configured_mode != selected.motor_control_mode:
             self.error(
                 f"control config '{config_path}' is for mode {configured_mode!r}, "
@@ -121,6 +128,11 @@ class ModeConfigArgumentParser(argparse.ArgumentParser):
 def build_parser(description: str | None = None) -> argparse.ArgumentParser:
     parser = ModeConfigArgumentParser(description=description)
     robot = parser.add_argument_group("robot")
+    robot.add_argument("--robot-model", choices=("b601_dm", "b601_rs"), default="b601_dm")
+    robot.add_argument("--rs-zero-confirmed", action=argparse.BooleanOptionalAction, default=False,
+                       help="manual RS zero declaration when not using a saved calibration; never sets zeros")
+    robot.add_argument("--gripper-enabled", action=argparse.BooleanOptionalAction, default=True,
+                       help="enable Trigger/button gripper targets; otherwise hold feedback-captured position")
     robot.add_argument(
         "--control-config",
         type=Path,
@@ -133,6 +145,8 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
     )
     robot.add_argument("--robot-port", default="/dev/ttyACM0")
     robot.add_argument("--robot-id", default="rebot_b601_vr")
+    robot.add_argument("--calibration-dir", type=Path, default=None,
+                       help="RS calibration directory; defaults to LeRobot's robot calibration directory")
     robot.add_argument("--can-adapter", choices=("damiao", "socketcan"), default="damiao")
     robot.add_argument("--dm-serial-baud", type=int, default=921600)
     robot.add_argument(
@@ -160,7 +174,7 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
     robot.add_argument("--initial-q", type=float, nargs=6,
                        default=tuple(DEFAULT_INITIAL_Q_REFERENCE_RAD),
                        metavar=("Q1", "Q2", "Q3", "Q4", "Q5", "Q6"),
-                       help="initial pose in validated RS-example radians; q2/q3 are converted to DM signs")
+                       help="initial pose in reference radians; q2/q3 sign conversion applies only to DM")
     robot.add_argument("--move-to-initial", action=argparse.BooleanOptionalAction, default=True,
                        help="move at bounded speed to --initial-q before accepting VR control")
     robot.add_argument("--initial-move-tolerance-deg", type=float, default=2.0)
@@ -176,6 +190,8 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
                        help="joint acceleration cap for Ctrl+C return to zero")
     robot.add_argument("--exit-zero-tolerance-deg", type=float, default=2.0,
                        help="zero-return tolerance, independent of startup tolerance")
+    robot.add_argument("--exit-zero-stall-timeout", type=float, default=None,
+                       help="zero-return no-progress window in seconds; defaults to initial-stall-timeout")
     robot.add_argument("--no-calibrate", action="store_true")
     robot.add_argument("--disable-torque-on-disconnect", action=argparse.BooleanOptionalAction,
                        default=True, help="disable motors when exiting (support the arm before using the default)")
@@ -324,7 +340,7 @@ def build_parser(description: str | None = None) -> argparse.ArgumentParser:
         "--mit-dynamics-urdf",
         type=Path,
         default=None,
-        help="six-axis inertial URDF; defaults to the packaged B601-DM model",
+        help="six-axis inertial URDF; defaults to the packaged model selected by --robot-model",
     )
     ik.add_argument(
         "--arm-command-lookahead-ms",
@@ -410,6 +426,15 @@ def validate_args(args: argparse.Namespace) -> None:
     """Reject unsafe or internally inconsistent command-line settings."""
     ShutdownPolicy(args.disable_attempts, args.disable_interval_s, args.disable_feedback_wait_s,
                    request_feedback=args.disable_request_feedback)
+    profile = arm_profile(args.robot_model)
+    for name in ("rs_zero_confirmed", "gripper_enabled"):
+        if type(getattr(args, name)) is not bool:
+            raise ValueError(f"{name} must be boolean")
+    if args.robot_model == "b601_rs":
+        if args.motor_control_mode != "mit" or args.gripper_control_mode != "mit":
+            raise ValueError("RS currently supports MIT arm and gripper modes only")
+        if args.can_adapter != "socketcan":
+            raise ValueError("RS requires SocketCAN (e.g. --robot-port can0)")
     _validate_named_values(
         {
             "stale-timeout": args.stale_timeout,
@@ -444,6 +469,7 @@ def validate_args(args: argparse.Namespace) -> None:
             "wrist-acceleration-rad-s2": args.wrist_acceleration_rad_s2,
             "wrist-relative-target-deg": args.wrist_relative_target_deg,
             "gripper-relative-target-deg": args.gripper_relative_target_deg,
+            "exit-zero-stall-timeout": args.exit_zero_stall_timeout,
         },
         "positive",
         allow_none=True,
@@ -525,10 +551,15 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("gripper-mit-kp must be finite and in [0, 500]")
     if not np.isfinite(args.gripper_mit_kd) or not 0.0 <= args.gripper_mit_kd <= 5.0:
         raise ValueError("gripper-mit-kd must be finite and in [0, 5]")
-    if not np.all(np.isfinite([args.gripper_open_deg, args.gripper_closed_deg])):
-        raise ValueError("gripper open and closed positions must be finite")
-    if not -270.0 <= args.gripper_open_deg < args.gripper_closed_deg <= 0.0:
-        raise ValueError("gripper positions must satisfy -270 <= open < closed <= 0 degrees")
+    if args.gripper_enabled:
+        if (args.gripper_open_deg is None or args.gripper_closed_deg is None or
+                not np.all(np.isfinite([args.gripper_open_deg, args.gripper_closed_deg]))):
+            raise ValueError("gripper open and closed positions must be provided and finite")
+        if args.robot_model == "b601_dm":
+            if not -270.0 <= args.gripper_open_deg < args.gripper_closed_deg <= 0.0:
+                raise ValueError("gripper positions must satisfy -270 <= open < closed <= 0 degrees")
+        elif args.gripper_open_deg == args.gripper_closed_deg:
+            raise ValueError("RS gripper open and closed positions must differ")
 
     # MIT vectors always map to q1..q6 in order.
     mit_kp = np.asarray(args.mit_kp, dtype=np.float64)
@@ -541,11 +572,11 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("MIT Kd must contain six finite values in [0, 5]")
 
     if not _is_finite_vector_in_range(
-        mit_torque, 0.0, np.asarray(ARM_EFFORT_LIMIT_NM), lower_inclusive=False
+        mit_torque, 0.0, np.asarray(profile.effort_nm), lower_inclusive=False
     ):
         raise ValueError(
             "MIT torque limits must be positive and no greater than "
-            f"[{', '.join(f'{value:g}' for value in ARM_EFFORT_LIMIT_NM)}] N*m"
+            f"[{', '.join(f'{value:g}' for value in profile.effort_nm)}] N*m"
         )
 
     if (
@@ -600,10 +631,17 @@ def status_line(status: CartesianControlStatus) -> str:
             f"  actual  {vector(status.actual_deg)} deg",
             f"  target  {vector(status.target_deg)} deg",
             f"  command {vector(status.command_deg)} deg",
+            f"  Trigger={status.trigger:.3f} gripper_latch={'ON' if status.gripper_trigger_active else 'OFF'} "
+            f"gripper actual/target/command="
+            f"{status.gripper_actual_deg:.2f}/{status.gripper_target_deg:.2f}/{status.gripper_command_deg:.2f} deg",
         )
     )
 
     summary = []
+    if status.return_target:
+        error = float(np.max(np.abs(status.target_deg[:6] - status.actual_deg[:6])))
+        label = "paused" if not status.tracking else f"error={error:.2f}deg"
+        summary.append(f"return={status.return_target.upper()} {label}")
     if status.tcp_position_error_m is not None:
         # Split IK controls the joint4-axis point.
         summary.append(

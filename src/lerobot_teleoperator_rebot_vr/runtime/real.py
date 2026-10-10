@@ -19,8 +19,9 @@ from ..control.feedback import read_robot_feedback
 from ..config_rebot_vr import DEFAULT_BASE_T_ANCHOR, RebotVRConfig
 from ..control.types import ARM_JOINT_NAMES, CartesianControlConfig
 from ..diagnostics.logger import CSVLogger, build_csv_row
-from ..diagnostics.motion import cached_motor_row, mit_command_row
+from ..diagnostics.motion import cached_motor_row, gripper_command_row, mit_command_row
 from ..ik.kinematics import B601Kinematics
+from ..hardware.profiles import arm_profile
 from ..vr.controller import make_vr_controller
 from .cli import (
     build_parser as _parser,
@@ -73,7 +74,20 @@ def _run_arm(args, *, session=None, arm_id=None) -> None:
 
     # Build the model before opening the CAN device so dependency/model errors
     # cannot leave a powered robot connected without a control loop.
-    kinematics = B601Kinematics(args.urdf, "gripper_end")
+    profile = arm_profile(args.robot_model)
+    if args.robot_model == "b601_rs":
+        from ..hardware.rs_calibration import RSCalibrationStore
+        calibration = RSCalibrationStore(args.robot_id, args.calibration_dir)
+        if not args.rs_zero_confirmed and not calibration.load():
+            raise ValueError(
+                "RS zeros are unconfirmed. Run lerobot-calibrate "
+                "--robot.type=rebot_b601_rs_follower --robot.port=" + args.robot_port
+                + " --robot.id=" + args.robot_id + "; expected record: " + str(calibration.path)
+            )
+    kinematics = B601Kinematics(
+        args.urdf or (profile.model_path() if args.robot_model == "b601_rs" else None),
+        "gripper_end",
+    )
     vr_config = RebotVRConfig(
         hand_side=args.hand,
         clutch_threshold=args.grip_press,
@@ -103,6 +117,8 @@ def _run_arm(args, *, session=None, arm_id=None) -> None:
         else args.max_relative_target_deg
     )
     control_config = CartesianControlConfig(
+        robot_model=args.robot_model,
+        gripper_enabled=args.gripper_enabled,
         qp_solver=args.qp_solver,
         qp_position_cost=args.qp_position_cost,
         qp_position_gain=args.qp_position_gain,
@@ -156,42 +172,63 @@ def _run_arm(args, *, session=None, arm_id=None) -> None:
         max_command_feedback_error_deg=args.max_relative_target_deg * 0.9,
     )
 
-    try:
-        from lerobot.robots.rebot_b601_follower import (
-            RebotB601Follower,
-            RebotB601FollowerRobotConfig,
+    if args.robot_model == "b601_rs":
+        from ..hardware.rs import RSFollower, RSFollowerConfig
+        robot_config = RSFollowerConfig(
+            port=args.robot_port,
+            id=args.robot_id,
+            calibration_dir=args.calibration_dir,
+            zero_confirmed=args.rs_zero_confirmed,
+            disable_torque_on_disconnect=args.disable_torque_on_disconnect,
+            gripper_mit_kp=args.gripper_mit_kp,
+            gripper_mit_kd=args.gripper_mit_kd,
+            max_relative_target=_follower_relative_target(
+                args.max_relative_target_deg, wrist_rel_target, gripper_rel_target),
         )
-    except ImportError as exc:
-        raise ImportError(
-            "This command requires LeRobot with rebot_b601_follower support (0.6.x)."
-        ) from exc
+        if args.gripper_enabled:
+            robot_config.joint_limits["gripper"] = (
+                min(args.gripper_open_deg, args.gripper_closed_deg),
+                max(args.gripper_open_deg, args.gripper_closed_deg),
+            )
+        raw_robot = RSFollower(robot_config)
+    else:
+        try:
+            from lerobot.robots.rebot_b601_follower import (
+                RebotB601Follower,
+                RebotB601FollowerRobotConfig,
+            )
+        except ImportError as exc:
+            raise ImportError(
+                "This command requires LeRobot with rebot_b601_follower support (0.6.x)."
+            ) from exc
 
-    robot_config = RebotB601FollowerRobotConfig(
-        port=args.robot_port,
-        id=args.robot_id,
-        can_adapter=args.can_adapter,
-        dm_serial_baud=args.dm_serial_baud,
-        control_mode=args.motor_control_mode,
-        mit_kp=[*map(float, args.mit_kp), float(args.gripper_mit_kp)],
-        mit_kd=[*map(float, args.mit_kd), float(args.gripper_mit_kd)],
-        gripper_control_mode=args.gripper_control_mode,
-        gripper_torque_ratio=args.gripper_torque_ratio,
-        gripper_mit_kp=args.gripper_mit_kp,
-        gripper_mit_kd=args.gripper_mit_kd,
-        pos_vel_velocity=_follower_pos_vel_velocity(
-            args.max_joint_speed_rad_s,
-            wrist_speed,
-            args.gripper_max_speed_deg_s,
-        ),
-        max_relative_target=_follower_relative_target(
-            args.max_relative_target_deg,
-            wrist_rel_target,
-            gripper_rel_target,
-        ),
-        disable_torque_on_disconnect=args.disable_torque_on_disconnect,
-    )
+        robot_config = RebotB601FollowerRobotConfig(
+            port=args.robot_port,
+            id=args.robot_id,
+            can_adapter=args.can_adapter,
+            dm_serial_baud=args.dm_serial_baud,
+            control_mode=args.motor_control_mode,
+            mit_kp=[*map(float, args.mit_kp), float(args.gripper_mit_kp)],
+            mit_kd=[*map(float, args.mit_kd), float(args.gripper_mit_kd)],
+            gripper_control_mode=args.gripper_control_mode,
+            gripper_torque_ratio=args.gripper_torque_ratio,
+            gripper_mit_kp=args.gripper_mit_kp,
+            gripper_mit_kd=args.gripper_mit_kd,
+            pos_vel_velocity=_follower_pos_vel_velocity(
+                args.max_joint_speed_rad_s,
+                wrist_speed,
+                args.gripper_max_speed_deg_s,
+            ),
+            max_relative_target=_follower_relative_target(
+                args.max_relative_target_deg,
+                wrist_rel_target,
+                gripper_rel_target,
+            ),
+            disable_torque_on_disconnect=args.disable_torque_on_disconnect,
+        )
+        raw_robot = RebotB601Follower(robot_config)
     robot = ManagedFollower(
-        RebotB601Follower(robot_config),
+        raw_robot,
         policy=ShutdownPolicy(args.disable_attempts, args.disable_interval_s,
                               args.disable_feedback_wait_s,
                               request_feedback=args.disable_request_feedback),
@@ -236,7 +273,11 @@ def _run_arm(args, *, session=None, arm_id=None) -> None:
             ),
             gravity_scale=args.mit_gravity_scale,
             gravity_ramp_s=args.mit_gravity_ramp_s,
-            dynamics_urdf=args.mit_dynamics_urdf,
+            dynamics_urdf=args.mit_dynamics_urdf or (
+                profile.model_path(dynamics=True) if args.robot_model == "b601_rs" else None),
+            robot_model=args.robot_model,
+            gripper_velocity_limit_deg_s=(args.gripper_max_speed_deg_s
+                if args.robot_model == "b601_rs" and args.gripper_enabled else 0.0),
         )
     else:
         robot_io = robot
@@ -272,9 +313,12 @@ def _run_arm(args, *, session=None, arm_id=None) -> None:
     arm_started = False
     preserve_torque_for_feedback_fault = False
     feedback_fault_active = False
-    print("Support the arm before exit: torque is disabled on disconnect by default.")
+    zero_return_completed = False
+    print("Exit torque policy: " + ("disable motors; support the arm before exit."
+          if args.disable_torque_on_disconnect else
+          "retain motor torque; support the arm before explicitly disabling power."))
     if args.return_to_zero_on_exit:
-        print("Ctrl+C returns q1-q6 to zero before disconnecting; press Ctrl+C again to abort the return.")
+        print("Ctrl+C returns q1-q6 to zero before disconnecting; a second Ctrl+C aborts the return and retains torque.")
     if args.motor_control_mode == "mit":
         print(
             "Arm motor mode: MIT with q1-q6 velocity targets and Pinocchio "
@@ -287,19 +331,19 @@ def _run_arm(args, *, session=None, arm_id=None) -> None:
     else:
         print("Arm motor mode: POS_VEL.")
     print("Release Grip fully after tracking starts; hold Grip only when ready to move.")
-    print(
-        "Gripper mapping (deg): "
-        f"Trigger 0 -> {control_config.gripper_open_deg:.1f}, "
-        f"Trigger 1 -> {control_config.gripper_closed_deg:.1f}; "
-        "fresh Tracking applies this mapping immediately."
-    )
+    if args.gripper_enabled:
+        print(f"Gripper input: {args.hand} controller Trigger (independent of Grip).")
+        print(f"Gripper mapping (deg): Trigger 0 -> {control_config.gripper_open_deg:.1f}, "
+              f"Trigger 1 -> {control_config.gripper_closed_deg:.1f}; fresh Tracking applies this mapping immediately.")
+    else:
+        print("Gripper holds its captured feedback position; Trigger and return buttons do not change its target.")
     initial_target_rad = None
     if args.move_to_initial:
         initial_target_rad = arm_controller.home_q_rad.copy()
         print(
             "Initial pose RS reference (rad): "
             f"{np.array2string(np.asarray(args.initial_q), precision=3, suppress_small=True)}; "
-            "q2/q3 are sign-converted for B601-DM."
+            + ("q2/q3 are sign-converted for B601-DM." if args.robot_model == "b601_dm" else "RS native joint coordinates.")
         )
     else:
         print("Initial-pose motion is disabled; VR control will start from actual feedback.")
@@ -412,6 +456,9 @@ def _run_arm(args, *, session=None, arm_id=None) -> None:
                 break
             send_started_ns = time.monotonic_ns()
             if isinstance(robot_io, MITCommandDispatcher):
+                if args.robot_model == "b601_rs":
+                    robot_io.set_zero_return(status.feedback_valid and status.state.value == "idle"
+                                             and status.return_target == "zero")
                 if not status.feedback_valid or status.state.value != "active":
                     robot_io.stop_arm_velocity(immediate=True)
                 elif (
@@ -426,7 +473,12 @@ def _run_arm(args, *, session=None, arm_id=None) -> None:
             if action is None:
                 sent_action = None
             elif status.feedback_valid:
-                sent_action = robot_io.send_action(action)
+                if isinstance(robot_io, MITCommandDispatcher) and args.robot_model == "b601_rs":
+                    sent_action = robot_io.send_action(action, gripper_velocity_deg_s=(
+                        status.gripper_velocity_deg_s
+                        if status.tracking and args.gripper_enabled else 0.0))
+                else:
+                    sent_action = robot_io.send_action(action)
             else:
                 sent_action = _send_feedback_hold_action(robot_io, action)
             send_finished_ns = time.monotonic_ns()
@@ -558,6 +610,9 @@ def _run_arm(args, *, session=None, arm_id=None) -> None:
                 row = build_csv_row(status)
                 row.update(feedback_row)
                 row["arm_id"] = arm_id or "single"
+                row["vr_hand"] = args.hand
+                row["gripper_enabled"] = args.gripper_enabled
+                row.update(gripper_command_row(robot_io, status, sent_action))
                 if sent_action is not None:
                     sent_deg = np.array([sent_action[f"{name}.pos"] for name in ARM_JOINT_NAMES])
                     row.update(mit_command_row(robot_io, status.actual_deg[:6], sent_deg, feedback_row))
@@ -642,16 +697,22 @@ def _run_arm(args, *, session=None, arm_id=None) -> None:
                                             write_row=None if csv_logger is None else csv_logger.write_row,
                                             arm_id=arm_id,
                                         )
+                                        zero_return_completed = reached
                                         if not reached:
-                                            logger.warning("Return to zero interrupted; proceeding to disconnect.")
+                                            robot_io.config.disable_torque_on_disconnect = False
+                                            logger.warning("Return to zero interrupted; retaining torque on disconnect. Support the arm before disabling power.")
                                     except Exception:
+                                        robot_io.config.disable_torque_on_disconnect = False
                                         if session is not None:
                                             session.request_stop()
-                                        logger.exception("Return to zero failed; proceeding to disconnect.")
+                                        logger.exception("Return to zero failed; retaining torque on disconnect. Support the arm before disabling power.")
                                         # The enclosing finally blocks still disconnect and drain
                                         # logs. Propagate failure so the session cannot exit 0.
                                         raise
                             finally:
+                                if args.robot_model == "b601_rs" and not zero_return_completed:
+                                    robot_io.config.disable_torque_on_disconnect = False
+                                    logger.warning("RS zero return was not verified; automatic torque-off suppressed. Support the arm before disabling power.")
                                 if preserve_torque_for_feedback_fault:
                                     print(
                                         "Persistent feedback fault: retaining motor torque at the "

@@ -20,8 +20,14 @@ MOTION_FIELDNAMES = (
         ("mos_temperature", "c"), ("rotor_temperature", "c"),
         ("mit_kp", "nm_rad"), ("mit_kd", "nm_s_rad"),
         ("estimated_pd_ff", "nm"), ("command_clipped", "flag"),
+        ("zero_trim", "nm"),
     ) for joint in ARM_JOINT_NAMES),
     *(f"feedback_cache_error_{joint}" for joint in ARM_JOINT_NAMES),
+    "sent_gripper_deg", "gripper_command_sent", "gripper_enabled", "vr_hand",
+    "gripper_command_clipped_flag", "gripper_control_mode",
+    "mit_kp_gripper_nm_rad", "mit_kd_gripper_nm_s_rad",
+    "estimated_position_effort_gripper_nm",
+    "mit_desired_velocity_gripper_deg_s",
 )
 
 
@@ -31,6 +37,9 @@ def cached_motor_row(robot) -> dict[str, object]:
     The cache may advance independently of get_observation(); retain its own
     position for comparison. Its read timestamp is NOT a receive timestamp.
     """
+    telemetry = getattr(robot, "motor_feedback_telemetry", None)
+    if callable(telemetry):
+        return telemetry()
     row = {"feedback_cache_read_monotonic_ns": time.monotonic_ns(),
            "feedback_freshness": "unknown_no_receive_timestamp"}
     motors = getattr(robot, "motors", {})
@@ -66,7 +75,9 @@ def mit_command_row(robot, actual_deg, sent_deg, feedback) -> dict[str, object]:
         return {}
     row = {"motor_control_mode": "mit"}
     velocity = robot.desired_velocity_rad_s
+    zero_trim = robot.__dict__.get("zero_trim")
     for i, joint in enumerate(ARM_JOINT_NAMES):
+        row[f"zero_trim_{joint}_nm"] = 0.0 if zero_trim is None else float(zero_trim.torque_nm[i])
         row[f"mit_desired_velocity_{joint}_rad_s"] = float(velocity[i])
         row[f"mit_gravity_{joint}_nm"] = float(robot.last_gravity_torque_nm[i])
         row[f"mit_feedforward_{joint}_nm"] = float(robot.last_feedforward_torque_nm[i])
@@ -80,6 +91,32 @@ def mit_command_row(robot, actual_deg, sent_deg, feedback) -> dict[str, object]:
                 + robot.kd[i] * (velocity[i] - measured_velocity)
                 + robot.last_feedforward_torque_nm[i]
             )
+    return row
+
+
+def gripper_command_row(robot, status, sent_action) -> dict[str, object]:
+    """Record returned send targets; no CAN reads and no torque-state claims."""
+    from ..control.mit import MITCommandDispatcher
+
+    sent = None if sent_action is None else sent_action.get("gripper.pos")
+    row = {"gripper_command_sent": sent is not None}
+    if sent is None:
+        return row
+    row["sent_gripper_deg"] = float(sent)
+    row["gripper_command_clipped_flag"] = not np.isclose(
+        sent, status.gripper_command_deg, rtol=0., atol=1e-6)
+    if isinstance(robot, MITCommandDispatcher):
+        row["gripper_control_mode"] = robot.config.gripper_control_mode
+        if robot.config.gripper_control_mode == "mit":
+            row["mit_desired_velocity_gripper_deg_s"] = robot.last_gripper_velocity_deg_s
+            kp = float(robot.config.gripper_mit_kp)
+            row["mit_kp_gripper_nm_rad"] = kp
+            row["mit_kd_gripper_nm_s_rad"] = float(robot.config.gripper_mit_kd)
+            if status.feedback_valid:
+                # Only the position-error term, NOT measured/total torque:
+                # RS velocity cache is not reliable enough to estimate damping.
+                row["estimated_position_effort_gripper_nm"] = float(
+                    kp * np.deg2rad(sent - status.gripper_actual_deg))
     return row
 
 

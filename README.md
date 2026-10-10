@@ -50,7 +50,7 @@
 ## Safety
 
 - Depending on the configuration, an arm can move automatically at startup even without pressing Grip. Verify zero calibration, joint directions, and the operating area before running. Start with a low-speed check.
-- Motors are disabled on exit by default, so the arms may fall. Prepare reliable support and an emergency stop; supports must not obstruct the test motion.
+- DM profiles disable motors on exit by default; the RS profile disables after verified zero return on normal Ctrl+C. Support the arms before exit. Torque retention cannot protect against supply loss or hardware communication timeouts.
 - MIT mode is experimental. Verify gains and the direction of gravity compensation. `mit_torque_limit_nm` limits only feedforward torque, not total motor output torque.
 - Dual-arm operation currently requires upright bases placed side by side and facing the same direction, with two independent CAN buses. There is no inter-arm collision detection or shared-object constraint.
 
@@ -126,6 +126,57 @@ rebot-vr-teleoperate \
 ```
 
 * * *
+
+### B601-RS Single Arm (Experimental MIT)
+
+Use `--robot-model b601_rs` to load [config/rs_mit_split.yaml](config/rs_mit_split.yaml).
+The default remains B601-DM; existing DM single/dual-arm commands are unchanged.
+RS supports single and dual arms, SocketCAN and MIT, with MotorBridge 0.5.3+.
+
+Read all seven motor positions without enabling, changing modes, or setting zeros:
+
+```bash
+PYTHONPATH=src python -m lerobot_teleoperator_rebot_vr.tools.rs_probe --port can0
+```
+
+Calibrate through LeRobot's standard command. Align the physical RS zero pose,
+fully close the gripper and support the arm before pressing Enter at `Press ENTER when ready...`:
+
+```bash
+lerobot-calibrate \
+  --robot.type=rebot_b601_rs_follower \
+  --robot.port=can0 \
+  --robot.id=rebot_b601_rs_vr
+
+rebot-vr-teleoperate \
+  --robot-model b601_rs \
+  --robot-port can0 \
+  --robot-id rebot_b601_rs_vr
+```
+
+Calibration writes and checks seven zeros, saves a record under the robot ID,
+and exits without enabling. VR loads that record automatically; no
+`--rs-zero-confirmed` flag is needed. RS defaults to 50 Hz, low motion limits,
+automatic startup movement to `[0, 0.8, 0.8, 0, 0, 0]` radians, and zero return
+on normal Ctrl+C exit, with a 0.5° arrival tolerance and a stable-feedback check. RS then disables torque; a failed/interrupted return never authorizes torque-off. Trigger controls the gripper between measured open
+310.12° and closed 0° endpoints for this arm; remeasure after changing its zero or hardware. See the
+[RS single-arm notes](assest/docs/RS_SINGLE_ARM.md) for calibration, model sources
+and validation limits.
+
+For two RS arms, use `config/dual_rs_mit_split.yaml` with the same dual-arm entry point:
+
+```bash
+rebot-vr-teleoperate-dual --config config/dual_rs_mit_split.yaml --dry-run
+```
+
+The confirmed wiring is left `can0` (ID `rebot_b601_rs_left`) and right `can1`
+(ID `rebot_b601_rs_right`). Recalibrate each arm separately under these IDs before running;
+both RS calibration records are checked before either CAN worker starts.
+Both grippers are enabled with shared MIT gains and motion limits. At the user's
+request, the right gripper uses the left gripper's 0°/310.12° endpoints; its own
+travel has not been independently measured.
+See [RS dual-arm setup and commands](assest/docs/RS_DUAL_ARM.md) for calibration,
+gripper setup, the low-speed check and normal operation. DM commands are unchanged.
 
 ## Controller Inputs and Shutdown
 
