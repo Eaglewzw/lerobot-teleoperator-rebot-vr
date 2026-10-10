@@ -66,6 +66,15 @@ adb install -r assest/reBot.apk
 
 ## B601-RS 使用
 
+### 启用 CAN 接口
+
+连接 USB 转 CAN 设备后执行，波特率为 **1 Mbps**；单臂只需第一条，已启用的接口无需重复执行。
+
+```bash
+sudo ip link set can0 up type can bitrate 1000000
+sudo ip link set can1 up type can bitrate 1000000
+```
+
 ### 单臂（MIT）
 
 启用 `can0`（1 Mbps），将机械臂摆至官方零位、夹爪完全闭合并可靠支撑，然后标定。标定 ID 须与启动命令一致。

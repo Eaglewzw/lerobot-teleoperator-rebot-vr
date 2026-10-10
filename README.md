@@ -65,6 +65,15 @@ adb install -r assest/reBot.apk
 
 ## B601-RS
 
+### Enable CAN Interfaces
+
+Connect the USB-to-CAN adapters, then enable the interfaces at **1 Mbps**. A single arm needs only the first command; skip interfaces that are already enabled.
+
+```bash
+sudo ip link set can0 up type can bitrate 1000000
+sudo ip link set can1 up type can bitrate 1000000
+```
+
 ### Single Arm (MIT)
 
 Bring up `can0` at 1 Mbps. Align the arm to the official zero pose, fully close the gripper, and support the arm before calibration. Use the same robot ID for calibration and teleoperation.
